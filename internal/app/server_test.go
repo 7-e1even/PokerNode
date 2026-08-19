@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"pokernode/internal/auth"
+	"pokernode/internal/landlord"
 	"pokernode/internal/poker"
 	"pokernode/internal/secure"
 	"pokernode/internal/store"
@@ -406,7 +407,141 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables/"+mainTableID, nil, http.StatusNotFound, nil)
 }
 
-func TestTableKickVoteSettlesIdlePlayerAndUnblocksReadiness(t *testing.T) {
+func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
+	upstream := &fakeNewAPI{
+		users: map[string]map[string]any{
+			"admin-token":  {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
+			"player-token": {"id": int64(1), "username": "player-api", "display_name": "Player API", "role": 1, "status": 1},
+		},
+		quotas: map[int64]int64{1: 100_000_000, 99: 100_000_000},
+	}
+	newAPIServer := httptest.NewServer(http.HandlerFunc(upstream.serveHTTP))
+	defer newAPIServer.Close()
+
+	database := openTestDatabase(t)
+	cipher, err := secure.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := auth.NewSessions("test-session-secret-that-is-long-enough", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := NewServer(database, cipher, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	appServer := httptest.NewServer(application.Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer appServer.Close()
+
+	player := newTestClient(t)
+	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
+		"username": "single_table_player", "display_name": "Player", "password": "password-1",
+	}, http.StatusCreated, nil)
+	var created struct {
+		Space struct {
+			ID string `json:"id"`
+		} `json:"space"`
+	}
+	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/spaces", map[string]any{
+		"name": "Single table", "newapi_base_url": newAPIServer.URL, "admin_token": "admin-token", "quota_per_usd": 500_000,
+	}, http.StatusCreated, &created)
+	spacePath := appServer.URL + "/api/spaces/" + created.Space.ID
+	requestJSON(t, player, http.MethodPost, spacePath+"/bind", map[string]string{"token": "player-token"}, http.StatusOK, nil)
+
+	var landlordTable struct {
+		Table struct {
+			ID string `json:"id"`
+		} `json:"table"`
+	}
+	requestJSON(t, player, http.MethodPost, spacePath+"/tables", map[string]any{
+		"game_type": "landlord", "name": "Landlord", "base_stake_cents": 100,
+	}, http.StatusCreated, &landlordTable)
+	landlordPath := spacePath + "/tables/" + landlordTable.Table.ID
+
+	requestJSON(t, player, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, landlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
+	requestJSON(t, player, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, landlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, landlordPath+"/leave", map[string]any{}, http.StatusOK, nil)
+
+	type joinResult struct {
+		leaveEndpoint string
+		status        int
+		err           error
+	}
+	join := func(joinEndpoint, leaveEndpoint string, start <-chan struct{}, results chan<- joinResult) {
+		<-start
+		body, err := json.Marshal(map[string]int64{"buy_in_cents": 2_000})
+		if err != nil {
+			results <- joinResult{err: err}
+			return
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, joinEndpoint, bytes.NewReader(body))
+		if err != nil {
+			results <- joinResult{err: err}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := player.Do(req)
+		if err != nil {
+			results <- joinResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		results <- joinResult{leaveEndpoint: leaveEndpoint, status: resp.StatusCode, err: err}
+	}
+
+	start := make(chan struct{})
+	results := make(chan joinResult, 2)
+	go join(spacePath+"/table/join", spacePath+"/table/leave", start, results)
+	go join(landlordPath+"/join", landlordPath+"/leave", start, results)
+	close(start)
+	concurrentResults := []joinResult{<-results, <-results}
+	var successfulLeave string
+	conflicts := 0
+	for _, result := range concurrentResults {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		switch result.status {
+		case http.StatusOK:
+			if successfulLeave != "" {
+				t.Fatalf("both concurrent joins succeeded: %#v", concurrentResults)
+			}
+			successfulLeave = result.leaveEndpoint
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent join status %d", result.status)
+		}
+	}
+	if successfulLeave == "" || conflicts != 1 {
+		t.Fatalf("concurrent joins should produce one success and one conflict: %#v", concurrentResults)
+	}
+
+	var tables struct {
+		Tables []tableSummary `json:"tables"`
+	}
+	requestJSON(t, player, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tables)
+	seatedTables := 0
+	for _, table := range tables.Tables {
+		if table.ViewerSeated {
+			seatedTables++
+		}
+	}
+	if seatedTables != 1 {
+		t.Fatalf("player should be seated at exactly one table, got %d", seatedTables)
+	}
+	requestJSON(t, player, http.MethodPost, successfulLeave, map[string]any{}, http.StatusOK, nil)
+
+	upstream.mu.Lock()
+	playerQuota := upstream.quotas[1]
+	upstream.mu.Unlock()
+	if playerQuota != 100_000_000 {
+		t.Fatalf("joining and leaving tables must preserve the player's balance, got %d", playerQuota)
+	}
+}
+
+func TestTableKickVoteAndAdminCleanupFlows(t *testing.T) {
 	upstream := &fakeNewAPI{
 		users: map[string]map[string]any{
 			"admin-token": {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
@@ -521,6 +656,58 @@ func TestTableKickVoteSettlesIdlePlayerAndUnblocksReadiness(t *testing.T) {
 	requestJSON(t, bob, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, &voteResponse)
 	if voteResponse.Table.Street != poker.StreetPreflop {
 		t.Fatalf("remaining players should be able to start after voting, got %s", voteResponse.Table.Street)
+	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/clear", map[string]any{}, http.StatusConflict, nil)
+	requestJSON(t, alice, http.MethodDelete, spacePath+"/tables/"+mainTableID+"?force=true", nil, http.StatusConflict, nil)
+	actingClient := alice
+	if voteResponse.Table.Allowed.CanAct {
+		actingClient = bob
+	}
+	requestJSON(t, actingClient, http.MethodPost, spacePath+"/table/action", map[string]any{"action": "fold"}, http.StatusOK, nil)
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
+
+	var cleanupTable struct {
+		Table struct {
+			ID string `json:"id"`
+		} `json:"table"`
+	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/tables", map[string]any{
+		"name": "Cleanup", "small_blind_cents": 50, "big_blind_cents": 100,
+	}, http.StatusCreated, &cleanupTable)
+	cleanupPath := spacePath + "/tables/" + cleanupTable.Table.ID
+	for _, client := range []*http.Client{alice, bob, carol} {
+		requestJSON(t, client, http.MethodPost, cleanupPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	}
+	requestJSON(t, bob, http.MethodPost, cleanupPath+"/clear", map[string]any{}, http.StatusForbidden, nil)
+	var cleanupResponse struct {
+		SettledPlayers int          `json:"settled_players"`
+		SettledCents   int64        `json:"settled_cents"`
+		Table          tableSummary `json:"table"`
+	}
+	requestJSON(t, alice, http.MethodPost, cleanupPath+"/clear", map[string]any{}, http.StatusOK, &cleanupResponse)
+	if cleanupResponse.SettledPlayers != 3 || cleanupResponse.SettledCents != 6_000 || cleanupResponse.Table.PlayerCount != 0 {
+		t.Fatalf("admin clear should settle all players and keep an empty table: %#v", cleanupResponse)
+	}
+	requestJSON(t, carol, http.MethodGet, spacePath+"/operations", nil, http.StatusOK, &operations)
+	if operations.Operations[0].Note != "管理员强制清空牌桌" || operations.Operations[0].ActorUserID != aliceID {
+		t.Fatalf("admin clear cash-out audit is incomplete: %#v", operations.Operations[0])
+	}
+
+	for _, client := range []*http.Client{alice, bob} {
+		requestJSON(t, client, http.MethodPost, cleanupPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	}
+	requestJSON(t, alice, http.MethodDelete, cleanupPath+"?force=true", nil, http.StatusNoContent, nil)
+	requestJSON(t, alice, http.MethodGet, cleanupPath, nil, http.StatusNotFound, nil)
+	requestJSON(t, alice, http.MethodGet, spacePath+"/operations", nil, http.StatusOK, &operations)
+	if operations.Operations[0].Note != "管理员强制删除牌桌" || operations.Operations[0].ActorUserID != aliceID {
+		t.Fatalf("forced table deletion cash-out audit is incomplete: %#v", operations.Operations[0])
+	}
+	upstream.mu.Lock()
+	aliceQuota, bobQuota, finalCarolQuota := upstream.quotas[1], upstream.quotas[2], upstream.quotas[3]
+	upstream.mu.Unlock()
+	if aliceQuota+bobQuota != 200_000_000 || finalCarolQuota != 100_000_000 {
+		t.Fatalf("admin cleanup must preserve balances, got Alice=%d Bob=%d Carol=%d", aliceQuota, bobQuota, finalCarolQuota)
 	}
 	if aliceID == bobID || bobID == carolID {
 		t.Fatal("registered users must have distinct ids")
@@ -792,6 +979,137 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 
 	requestJSON(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/registration", map[string]bool{"enabled": false}, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "blocked", "display_name": "Blocked", "password": "password-4"}, http.StatusForbidden, nil)
+}
+
+func TestSuperAdminForceDeleteUserAndNewAPIAccount(t *testing.T) {
+	database := openTestDatabase(t)
+	cipher, err := secure.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{12}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := auth.NewSessions("test-session-secret-that-is-long-enough", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deletedMu sync.Mutex
+	var deletedNewAPIUserID int64
+	newAPIServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/user/77" || r.Header.Get("Authorization") != "Bearer admin-token" {
+			writeFake(w, http.StatusBadRequest, false, nil)
+			return
+		}
+		deletedMu.Lock()
+		deletedNewAPIUserID = 77
+		deletedMu.Unlock()
+		writeFake(w, http.StatusOK, true, nil)
+	}))
+	defer newAPIServer.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	appServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer appServer.Close()
+	admin := newTestClient(t)
+	var adminResult struct {
+		User store.User `json:"user"`
+	}
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
+		"username": "force_admin", "display_name": "Force Admin", "password": "password-1",
+	}, http.StatusCreated, &adminResult)
+	var targetResult struct {
+		User store.User `json:"user"`
+	}
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{
+		"username": "force_player", "display_name": "Force Player", "password": "password-2", "role": "player",
+	}, http.StatusCreated, &targetResult)
+	adminTokenEnc, err := cipher.Encrypt("admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userTokenEnc, err := cipher.Encrypt("user-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateSpace(context.Background(), store.Space{
+		ID: "force-space", Name: "Force Space", InviteCode: "FORCE1", OwnerUserID: targetResult.User.ID,
+		BaseURL: newAPIServer.URL, AdminTokenEnc: adminTokenEnc, AdminTokenLast4: "oken",
+		AdminNewAPIUserID: 99, AdminNewAPIRole: 100, QuotaPerUSD: 500_000, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.BindMember(context.Background(), store.Member{
+		SpaceID: "force-space", UserID: targetResult.User.ID, NewAPIUserID: 77, NewAPIUsername: "force-api",
+		NewAPIDisplay: "Force API", NewAPIRole: 1, UserTokenEnc: userTokenEnc, UserTokenLast4: "oken",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	table := poker.NewTable("occupied", "Occupied", 50, 100)
+	if _, err := table.Join(targetResult.User.ID, targetResult.User.DisplayName, 1_000); err != nil {
+		t.Fatal(err)
+	}
+	state, err := table.MarshalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveTableState(context.Background(), "force-space", "occupied", state); err != nil {
+		t.Fatal(err)
+	}
+	emptyLandlordTable := landlord.NewTable("empty-landlord", "Empty Landlord", 100)
+	landlordState, err := emptyLandlordTable.MarshalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveTableState(context.Background(), "force-space", "empty-landlord", landlordState); err != nil {
+		t.Fatal(err)
+	}
+	forceURL := appServer.URL + "/api/admin/users/" + strconv.FormatInt(targetResult.User.ID, 10) + "?force=true"
+	requestJSON(t, admin, http.MethodDelete, forceURL, nil, http.StatusConflict, nil)
+	deletedMu.Lock()
+	if deletedNewAPIUserID != 0 {
+		deletedMu.Unlock()
+		t.Fatal("New API account was deleted while the player was still seated")
+	}
+	deletedMu.Unlock()
+	if _, err := table.Leave(targetResult.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	state, err = table.MarshalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveTableState(context.Background(), "force-space", "occupied", state); err != nil {
+		t.Fatal(err)
+	}
+	requestJSON(t, admin, http.MethodDelete, forceURL, nil, http.StatusNoContent, nil)
+	deletedMu.Lock()
+	if deletedNewAPIUserID != 77 {
+		deletedMu.Unlock()
+		t.Fatalf("New API account deletion was not called, got %d", deletedNewAPIUserID)
+	}
+	deletedMu.Unlock()
+	deletedUser, err := database.UserByID(context.Background(), targetResult.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deletedUser.Status != "deleted" || deletedUser.Username == targetResult.User.Username {
+		t.Fatalf("local account was not anonymized: %#v", deletedUser)
+	}
+	space, err := database.SpaceByID(context.Background(), "force-space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if space.OwnerUserID != adminResult.User.ID {
+		t.Fatalf("owned channel was not transferred to the deleting administrator: %#v", space)
+	}
+	var overview struct {
+		Users []store.User `json:"users"`
+	}
+	requestJSON(t, admin, http.MethodGet, appServer.URL+"/api/admin/overview", nil, http.StatusOK, &overview)
+	for _, user := range overview.Users {
+		if user.ID == targetResult.User.ID {
+			t.Fatalf("forced-deleted user remained visible: %#v", user)
+		}
+	}
 }
 
 func TestChannelManagerCanManageMultipleAssignedChannels(t *testing.T) {

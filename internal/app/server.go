@@ -14,6 +14,7 @@ import (
 
 	"pokernode/internal/access"
 	"pokernode/internal/auth"
+	"pokernode/internal/landlord"
 	"pokernode/internal/newapi"
 	"pokernode/internal/poker"
 	"pokernode/internal/realtime"
@@ -31,14 +32,22 @@ type Server struct {
 	logger                  *slog.Logger
 	websocketOriginPatterns []string
 
-	tablesMu  sync.Mutex
-	tables    map[string]*tableRuntime
-	balanceMu sync.Mutex
+	tablesMu          sync.Mutex
+	tables            map[string]*tableRuntime
+	balanceMu         sync.Mutex
+	tableJoinMu       sync.Mutex
+	tableJoinInFlight map[tableJoinKey]struct{}
+}
+
+type tableJoinKey struct {
+	spaceID string
+	userID  int64
 }
 
 type tableRuntime struct {
 	mu          sync.Mutex
 	table       *poker.Table
+	landlord    *landlord.Table
 	deleted     bool
 	timer       *time.Timer
 	timerTurnID uint64
@@ -75,6 +84,7 @@ func NewServer(database *store.Store, cipher *secure.Cipher, sessions *auth.Sess
 	server := &Server{
 		store: database, cipher: cipher, sessions: sessions, newAPI: newapi.NewClient(),
 		hub: realtime.NewHub(), logger: logger, tables: make(map[string]*tableRuntime),
+		tableJoinInFlight: make(map[tableJoinKey]struct{}),
 	}
 	for _, option := range options {
 		option(server)
@@ -96,6 +106,9 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.withUser(s.handleMe))
 	mux.HandleFunc("PATCH /api/me/credentials", s.withUser(s.handleUpdateCredentials))
+	mux.HandleFunc("GET /api/me/mcp-key", s.withUser(s.handleMCPKeyStatus))
+	mux.HandleFunc("POST /api/me/mcp-key", s.withUser(s.handleCreateMCPKey))
+	mux.HandleFunc("DELETE /api/me/mcp-key", s.withUser(s.handleDeleteMCPKey))
 	mux.HandleFunc("GET /api/account-bindings", s.withUser(s.handleListAccountBindings))
 	mux.HandleFunc("GET /api/leaderboard", s.withUser(s.handleLobbyLeaderboard))
 	mux.HandleFunc("GET /api/spaces", s.withUser(s.handleListSpaces))
@@ -113,6 +126,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables", s.withUser(s.handleCreateTable))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/tables/{tableID}", s.withUser(s.handleTable))
 	mux.HandleFunc("DELETE /api/spaces/{spaceID}/tables/{tableID}", s.withUser(s.handleDeleteTable))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/clear", s.withUser(s.handleClearTable))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/leave", s.withUser(s.handleTableLeave))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/ready", s.withUser(s.handleTableReady))
@@ -123,6 +137,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/spaces/{spaceID}/tables/{tableID}/ws", s.withUser(s.handleWebSocket))
 	// Legacy routes keep existing installations on the default table.
 	mux.HandleFunc("GET /api/spaces/{spaceID}/table", s.withUser(s.handleTable))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/table/clear", s.withUser(s.handleClearTable))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/leave", s.withUser(s.handleTableLeave))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/ready", s.withUser(s.handleTableReady))
@@ -140,8 +155,10 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("PATCH /api/admin/roles/{roleKey}", s.withPermission(access.PermissionRolesManage, s.handleAdminUpdateRole))
 	mux.HandleFunc("DELETE /api/admin/roles/{roleKey}", s.withPermission(access.PermissionRolesManage, s.handleAdminDeleteRole))
 	mux.HandleFunc("PUT /api/admin/settings/registration", s.withPermission(access.PermissionRegistrationManage, s.handleAdminRegistration))
+	handler := s.recover(mux)
+	mux.Handle("/mcp", s.mcpHTTPHandler(handler))
 	mux.Handle("/", staticHandler(webRoot))
-	return s.recover(mux)
+	return handler
 }
 
 type userHandler func(http.ResponseWriter, *http.Request, store.User) error

@@ -66,6 +66,9 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const onBackRef = useRef(onBack);
+
+  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
   const reportError = useCallback((message: string) => toast.error(message), []);
 
@@ -162,6 +165,9 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
           if (message.type === "table") {
             setTable(message.table);
             setKickVote(message.kick_vote ?? null);
+          } else if (message.type === "table_deleted") {
+            toast.info("牌桌已被管理员删除");
+            onBackRef.current();
           }
         } catch { /* ignore malformed server messages */ }
       };
@@ -724,7 +730,7 @@ function PlayingCard({ card, hidden = false, placeholder = false, dealIndex = 0,
   );
 }
 
-function BindPanel({ space, onBound }: { space: Space; onBound: (member: Membership, balance: Balance) => void }) {
+export function BindPanel({ space, onBound }: { space: Space; onBound: (member: Membership, balance: Balance) => void }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

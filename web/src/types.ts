@@ -102,6 +102,8 @@ export interface Card {
   suit: number;
 }
 
+export type GameType = "texas_holdem" | "landlord";
+
 export type PokerAction = "fold" | "check" | "call" | "bet" | "raise" | "all_in";
 
 export interface Player {
@@ -136,6 +138,7 @@ export interface AllowedActions {
 }
 
 export interface TableState {
+  game_type: "texas_holdem";
   id: string;
   name: string;
   small_blind_cents: number;
@@ -167,6 +170,64 @@ export interface TableState {
   };
 }
 
+export interface LandlordPlayer {
+  user_id: number;
+  name: string;
+  seat: number;
+  stack_cents: number;
+  cards?: Card[];
+  card_count: number;
+  ready: boolean;
+  landlord: boolean;
+  bid: number;
+  is_acting: boolean;
+}
+
+export interface LandlordAllowedActions {
+  can_act: boolean;
+  can_bid: boolean;
+  min_bid: number;
+  can_play: boolean;
+  can_pass: boolean;
+}
+
+export interface LandlordTableState {
+  game_type: "landlord";
+  id: string;
+  name: string;
+  base_stake_cents: number;
+  hand_id: number;
+  phase: "waiting" | "bidding" | "playing" | "complete";
+  acting_seat: number;
+  landlord_seat: number;
+  highest_bid: number;
+  bottom: Card[];
+  last_play: Card[];
+  last_combination: { kind?: string; main_rank?: number; length?: number; chain?: number };
+  last_play_seat: number;
+  trick_open: boolean;
+  multiplier: number;
+  action_timeout_seconds: number;
+  action_deadline_at: number;
+  turn_id: number;
+  viewer_seat: number;
+  players: LandlordPlayer[];
+  remaining_counts: Record<string, number>;
+  allowed_actions: LandlordAllowedActions;
+  can_start: boolean;
+  can_leave: boolean;
+  last_result?: {
+    hand_id: number;
+    winner: "地主" | "农民";
+    winner_seat: number;
+    bid: number;
+    multiplier: number;
+    stake_cents: number;
+    message: string;
+    payouts: Record<string, number>;
+  };
+}
+
 export interface KickVote {
   target_user_id: number;
   target_name: string;
@@ -187,11 +248,20 @@ export interface TableEnvelope {
   notice?: string;
 }
 
+export interface LandlordTableEnvelope {
+  type: "table";
+  table: LandlordTableState;
+  kick_vote: KickVote | null;
+  notice?: string;
+}
+
 export interface TableSummary {
   id: string;
   name: string;
-  small_blind_cents: number;
-  big_blind_cents: number;
+  game_type: GameType;
+  small_blind_cents?: number;
+  big_blind_cents?: number;
+  base_stake_cents?: number;
   action_timeout_seconds: number;
   player_count: number;
   max_players: number;
@@ -206,6 +276,7 @@ export interface TableSeatSummary {
   name: string;
   seat: number;
   stack_cents: number;
+  ready?: boolean;
 }
 
 export interface Balance {

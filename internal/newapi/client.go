@@ -62,6 +62,20 @@ func (c *Client) User(ctx context.Context, baseURL, adminToken string, userID in
 	return getUser(ctx, c.http, fmt.Sprintf("%s/api/user/%d", baseURL, userID), adminToken)
 }
 
+func (c *Client) DeleteUser(ctx context.Context, baseURL, adminToken string, userID int64) error {
+	if userID <= 0 {
+		return errors.New("New API 用户 ID 无效")
+	}
+	var result response[json.RawMessage]
+	if err := doJSON(ctx, c.http, http.MethodDelete, fmt.Sprintf("%s/api/user/%d", baseURL, userID), adminToken, nil, &result); err != nil {
+		return err
+	}
+	if !result.Success {
+		return messageError(result.Message)
+	}
+	return nil
+}
+
 // ProvisionUser creates a normal New API user, logs in as that user and
 // generates the long-lived System Access Token PokerNode needs for balance
 // operations. Re-running it with the same credentials is safe: if the user

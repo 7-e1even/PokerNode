@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	GameType                    = "texas_holdem"
 	MaxSeats                    = 8
 	DefaultActionTimeoutSeconds = 25
 	MinActionTimeoutSeconds     = 5
@@ -137,6 +138,7 @@ type PlayerView struct {
 }
 
 type Snapshot struct {
+	GameType             string         `json:"game_type"`
 	ID                   string         `json:"id"`
 	Name                 string         `json:"name"`
 	SmallBlind           int64          `json:"small_blind_cents"`
@@ -511,7 +513,8 @@ func (t *Table) Snapshot(viewerID int64) Snapshot {
 		players = append(players, view)
 	}
 	return Snapshot{
-		ID: t.state.ID, Name: t.state.Name, SmallBlind: t.state.SmallBlind, BigBlind: t.state.BigBlind,
+		GameType: GameType,
+		ID:       t.state.ID, Name: t.state.Name, SmallBlind: t.state.SmallBlind, BigBlind: t.state.BigBlind,
 		HandID: t.state.HandID, Street: t.state.Street, Board: append([]Card(nil), t.state.Board...),
 		Pot: t.potLocked(), CurrentBet: t.state.CurrentBet, BetLevel: t.state.BetLevel,
 		DealerSeat: t.state.Dealer, SmallBlindSeat: smallBlindSeat, BigBlindSeat: bigBlindSeat,

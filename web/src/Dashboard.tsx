@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, CheckCircle2, Copy, Crown, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
-  Menu, Plus, RadioTower, ShieldCheck, Trophy, UsersRound,
+  ArrowRight, Bot, CheckCircle2, Copy, Crown, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
+  Menu, Plus, RadioTower, ShieldCheck, Trophy,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -22,6 +22,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BrandMark } from "@/components/brand-mark";
 import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
+import { MCPKeyDialog } from "@/components/mcp-key-dialog";
 import { WeChatIcon } from "@/components/wechat-icon";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -48,6 +49,7 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [mcpKeyOpen, setMCPKeyOpen] = useState(false);
   const [error, setError] = useState("");
   const [leaderboardError, setLeaderboardError] = useState("");
 
@@ -106,12 +108,14 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
         onOpenMenu={() => setMobileOpen(true)}
         onOpenBindings={onOpenBindings}
         onOpenAccount={() => setAccountOpen(true)}
+        onOpenMCP={() => setMCPKeyOpen(true)}
         onOpenAdmin={onOpenAdmin}
         wechatLoginEnabled={wechatLoginEnabled}
         onLogout={() => void logout()}
       />
 
       <AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} />
+      <MCPKeyDialog open={mcpKeyOpen} onOpenChange={setMCPKeyOpen} />
 
       <div className="flex min-h-0 flex-1">
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -153,13 +157,14 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
   );
 }
 
-function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdmin, wechatLoginEnabled, onLogout }: {
+function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenAccount, onOpenMCP, onOpenAdmin, wechatLoginEnabled, onLogout }: {
   user: User;
   view: "ranking" | "channels";
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenMenu: () => void;
   onOpenBindings: () => void;
   onOpenAccount: () => void;
+  onOpenMCP: () => void;
   onOpenAdmin?: () => void;
   wechatLoginEnabled: boolean;
   onLogout: () => void;
@@ -170,7 +175,7 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
         <Button size="icon" variant="secondary" className="md:hidden" onClick={onOpenMenu} aria-label="打开游戏导航"><Menu /></Button>
         <div className="flex min-w-0 items-center gap-3">
           <BrandMark className="size-10" aria-hidden="true" />
-          <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">PokerNode</strong><small className="block truncate">Texas Hold’em Hall</small></span>
+          <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">PokerNode</strong><small className="block truncate">Friends Game Hall</small></span>
         </div>
         <nav className="hidden items-center gap-1 md:flex" aria-label="主导航">
           <Button variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
@@ -182,7 +187,7 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
         <DropdownMenuTrigger asChild>
           <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenAccount}><KeyRound />账号安全</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
+        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenAccount}><KeyRound />账号安全</DropdownMenuItem><DropdownMenuItem onSelect={onOpenMCP}><Bot />Agent MCP</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
       </DropdownMenu>
     </header>
   );
@@ -242,15 +247,11 @@ function RankingView({ user, leaderboard, loading, error }: {
 }) {
   return (
     <div className="player-lobby flex flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-7xl flex-col px-4 py-7 sm:px-6 sm:py-10 lg:px-8">
+      <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-7 sm:px-6 sm:py-10">
         <section className="flex flex-col gap-5" aria-labelledby="ranking-title">
-          <header className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
-            <div className="flex max-w-3xl flex-col gap-3">
-              <Badge variant="outline" className="w-fit"><Trophy data-icon="inline-start" />PokerNode Leaderboard</Badge>
-              <h1 id="ranking-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">牌桌实力榜</h1>
-              <p className="text-sm leading-6 text-muted-foreground">汇总你已加入频道的已结算战绩。排名只使用真实净胜和场次，不额外虚构评分。</p>
-            </div>
-            <Badge variant="secondary" className="w-fit"><UsersRound data-icon="inline-start" />{leaderboard.length} 位玩家</Badge>
+          <header className="flex flex-col gap-2">
+            <h1 id="ranking-title" className="font-heading text-3xl font-semibold tracking-tight">排行榜</h1>
+            <p className="text-sm text-muted-foreground">查看你已加入频道的已结算战绩。</p>
           </header>
 
           <LobbyLeaderboard entries={leaderboard} currentUserID={user.id} loading={loading} error={error} />
@@ -311,70 +312,42 @@ function LobbyLeaderboard({ entries, currentUserID, loading, error }: {
   error: string;
 }) {
   const ranked = [...entries].sort((left, right) => right.net_cents - left.net_cents || right.sessions - left.sessions || left.display_name.localeCompare(right.display_name));
-  const currentRank = ranked.findIndex((entry) => entry.user_id === currentUserID);
 
   return (
-    <Card className="lobby-leaderboard overflow-hidden [--card-spacing:--spacing(5)] sm:[--card-spacing:--spacing(6)]">
-      <CardHeader className="border-b">
-        <CardTitle className="text-xl">综合排名</CardTitle>
-        <CardDescription>按已结算净胜排序，场次用于同分排序</CardDescription>
-        <CardAction><Badge variant={currentRank >= 0 ? "secondary" : "outline"}>{currentRank >= 0 ? `我的名次 #${currentRank + 1}` : "等待首场战绩"}</Badge></CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+    <Card className="overflow-hidden [--card-spacing:0px]">
+      <CardContent>
         {error ? (
-          <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
+          <div className="p-5"><Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert></div>
         ) : loading ? (
           <LeaderboardSkeleton />
         ) : ranked.length === 0 ? (
           <Empty className="border-0 py-12"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>排行榜正在等待第一场牌局</EmptyTitle><EmptyDescription>完成买入和离桌结算后，真实战绩会显示在这里。</EmptyDescription></EmptyHeader></Empty>
         ) : (
-          <>
-            <div className="grid gap-3 md:grid-cols-3">
-              {ranked.slice(0, 3).map((entry, index) => (
-                <Card size="sm" className={cn("leaderboard-podium-card", index === 0 && "leaderboard-podium-card--first")} key={entry.user_id}>
-                  <CardHeader>
-                    <div className="flex min-w-0 items-center gap-3">
-                      <Avatar className="size-11"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
-                      <div className="min-w-0"><CardTitle className="truncate">{entry.display_name}</CardTitle><CardDescription>第 {index + 1} 名</CardDescription></div>
-                    </div>
-                    <CardAction><Badge variant={index === 0 ? "default" : "secondary"}>{index === 0 ? <Crown /> : `#${index + 1}`}</Badge></CardAction>
-                  </CardHeader>
-                  <CardContent><strong className="font-heading text-2xl tabular-nums">{netMoney(entry.net_cents)}</strong></CardContent>
-                  <CardFooter className="justify-between text-xs text-muted-foreground"><span>已结算净胜</span><span>{entry.sessions} 场</span></CardFooter>
-                </Card>
+          <Table>
+            <TableHeader>
+              <TableRow><TableHead className="w-16 text-center">排名</TableHead><TableHead>玩家</TableHead><TableHead className="hidden text-right sm:table-cell">场次</TableHead><TableHead className="text-right">净胜</TableHead></TableRow>
+            </TableHeader>
+            <TableBody>
+              {ranked.map((entry, index) => (
+                <TableRow className={cn(entry.user_id === currentUserID && "bg-muted/50")} key={entry.user_id}>
+                  <TableCell className="text-center"><Badge className="size-7 justify-center rounded-full p-0" variant={index === 0 ? "default" : index < 3 ? "secondary" : "outline"}>{index + 1}</Badge></TableCell>
+                  <TableCell><div className="flex min-w-0 items-center gap-3"><div className="relative pt-1">{index === 0 && <Crown aria-hidden="true" className="absolute -top-2 left-1/2 size-3.5 -translate-x-1/2 fill-current text-winner" />}<Avatar className="size-9"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar></div><div className="min-w-0"><strong className="block truncate">{entry.display_name}</strong>{entry.user_id === currentUserID && <span className="text-xs text-muted-foreground">这是你</span>}</div></div></TableCell>
+                  <TableCell className="hidden text-right tabular-nums text-muted-foreground sm:table-cell">{entry.sessions}</TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums">{netMoney(entry.net_cents)}</TableCell>
+                </TableRow>
               ))}
-            </div>
-
-            <div className="overflow-hidden rounded-xl border">
-              <Table>
-                <TableHeader>
-                  <TableRow><TableHead className="w-16 text-center">排名</TableHead><TableHead>玩家</TableHead><TableHead className="hidden text-right sm:table-cell">场次</TableHead><TableHead className="text-right">净胜</TableHead></TableRow>
-                </TableHeader>
-                <TableBody>
-                  {ranked.map((entry, index) => (
-                    <TableRow className={cn(entry.user_id === currentUserID && "bg-muted/50")} key={entry.user_id}>
-                      <TableCell className="text-center"><Badge className="size-7 justify-center rounded-full p-0" variant={index === 0 ? "default" : index < 3 ? "secondary" : "outline"}>{index + 1}</Badge></TableCell>
-                      <TableCell><div className="flex min-w-0 items-center gap-3"><Avatar className="size-9"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar><div className="min-w-0"><strong className="block truncate">{entry.display_name}</strong>{entry.user_id === currentUserID && <span className="text-xs text-muted-foreground">这是你</span>}</div></div></TableCell>
-                      <TableCell className="hidden text-right tabular-nums text-muted-foreground sm:table-cell">{entry.sessions}</TableCell>
-                      <TableCell className="text-right font-semibold tabular-nums">{netMoney(entry.net_cents)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </>
+            </TableBody>
+          </Table>
         )}
       </CardContent>
-      <CardFooter className="border-t text-xs leading-5 text-muted-foreground">统计范围仅包含你已加入的频道；正在牌桌上的筹码会在离桌结算后进入大厅排名。</CardFooter>
     </Card>
   );
 }
 
 function LeaderboardSkeleton() {
   return (
-    <div className="flex flex-col gap-5" aria-hidden="true">
-      <div className="grid gap-3 md:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <Card size="sm" key={index}><CardHeader><Skeleton className="size-11 rounded-full" /><Skeleton className="h-4 w-24" /></CardHeader><CardContent><Skeleton className="h-8 w-28" /></CardContent><CardFooter><Skeleton className="h-3 w-full" /></CardFooter></Card>)}</div>
-      <div className="flex flex-col gap-2">{Array.from({ length: 4 }, (_, index) => <Skeleton className="h-14 w-full" key={index} />)}</div>
+    <div className="flex flex-col gap-2 p-5" aria-hidden="true">
+      {Array.from({ length: 4 }, (_, index) => <Skeleton className="h-14 w-full" key={index} />)}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { ExternalLink, KeyRound, LogOut } from "lucide-react";
+import { Bot, ExternalLink, KeyRound, LogOut } from "lucide-react";
 import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
+import { MCPKeyDialog } from "@/components/mcp-key-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
@@ -9,6 +10,7 @@ import type { User } from "@/types";
 export function NavUser({ user, onOpenLobby, onUserUpdated, onLogout }: { user: User; onOpenLobby: () => void; onUserUpdated: (user: User) => void; onLogout: () => void }) {
   const { isMobile } = useSidebar();
   const [accountOpen, setAccountOpen] = useState(false);
+  const [mcpKeyOpen, setMCPKeyOpen] = useState(false);
   return (
     <><SidebarMenu>
       <SidebarMenuItem>
@@ -23,12 +25,13 @@ export function NavUser({ user, onOpenLobby, onUserUpdated, onLogout }: { user: 
             <DropdownMenuLabel><span className="block">{user.display_name}</span><span className="block font-normal text-muted-foreground">@{user.username}</span></DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => setAccountOpen(true)}><KeyRound />账号安全</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setMCPKeyOpen(true)}><Bot />Agent MCP</DropdownMenuItem>
             <DropdownMenuItem onSelect={onOpenLobby}><ExternalLink />打开玩家大厅</DropdownMenuItem>
             <DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出后台</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
-    </SidebarMenu><AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} /></>
+    </SidebarMenu><AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} /><MCPKeyDialog open={mcpKeyOpen} onOpenChange={setMCPKeyOpen} /></>
   );
 }
 

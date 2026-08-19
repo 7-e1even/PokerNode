@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"pokernode/internal/landlord"
 	"pokernode/internal/newapi"
 	"pokernode/internal/poker"
 	"pokernode/internal/store"
@@ -28,6 +29,13 @@ type tableEnvelope struct {
 	Table    poker.Snapshot `json:"table"`
 	KickVote *kickVoteView  `json:"kick_vote"`
 	Notice   string         `json:"notice,omitempty"`
+}
+
+type landlordTableEnvelope struct {
+	Type     string            `json:"type"`
+	Table    landlord.Snapshot `json:"table"`
+	KickVote *kickVoteView     `json:"kick_vote"`
+	Notice   string            `json:"notice,omitempty"`
 }
 
 type kickVote struct {
@@ -56,17 +64,19 @@ type kickVoteView struct {
 }
 
 type tableSummary struct {
-	ID                   string       `json:"id"`
-	Name                 string       `json:"name"`
-	SmallBlind           int64        `json:"small_blind_cents"`
-	BigBlind             int64        `json:"big_blind_cents"`
-	ActionTimeoutSeconds int          `json:"action_timeout_seconds"`
-	PlayerCount          int          `json:"player_count"`
-	MaxPlayers           int          `json:"max_players"`
-	HandID               int64        `json:"hand_id"`
-	Street               poker.Street `json:"street"`
-	ViewerSeated         bool         `json:"viewer_seated"`
-	Players              []tableSeat  `json:"players"`
+	ID                   string      `json:"id"`
+	Name                 string      `json:"name"`
+	GameType             string      `json:"game_type"`
+	SmallBlind           int64       `json:"small_blind_cents,omitempty"`
+	BigBlind             int64       `json:"big_blind_cents,omitempty"`
+	BaseStake            int64       `json:"base_stake_cents,omitempty"`
+	ActionTimeoutSeconds int         `json:"action_timeout_seconds"`
+	PlayerCount          int         `json:"player_count"`
+	MaxPlayers           int         `json:"max_players"`
+	HandID               int64       `json:"hand_id"`
+	Street               string      `json:"street"`
+	ViewerSeated         bool        `json:"viewer_seated"`
+	Players              []tableSeat `json:"players"`
 }
 
 type tableSeat struct {
@@ -74,6 +84,7 @@ type tableSeat struct {
 	Name   string `json:"name"`
 	Seat   int    `json:"seat"`
 	Stack  int64  `json:"stack_cents"`
+	Ready  bool   `json:"ready"`
 }
 
 func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request, user store.User) error {
@@ -91,7 +102,7 @@ func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request, user s
 		if err != nil {
 			return err
 		}
-		tables = append(tables, summarizeTable(runtime.table.Snapshot(user.ID)))
+		tables = append(tables, summarizeRuntime(runtime, user.ID))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tables": tables})
 	return nil
@@ -106,9 +117,11 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request, user 
 		return &apiError{Status: http.StatusForbidden, Message: "只有频道管理员可以创建牌桌"}
 	}
 	var input struct {
+		GameType             string `json:"game_type"`
 		Name                 string `json:"name"`
 		SmallBlind           int64  `json:"small_blind_cents"`
 		BigBlind             int64  `json:"big_blind_cents"`
+		BaseStake            int64  `json:"base_stake_cents"`
 		ActionTimeoutSeconds *int   `json:"action_timeout_seconds"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
@@ -118,8 +131,17 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request, user 
 	if input.Name == "" || len([]rune(input.Name)) > 40 {
 		return &apiError{Status: http.StatusBadRequest, Message: "牌桌名称需为 1–40 个字符"}
 	}
-	if input.SmallBlind <= 0 || input.BigBlind < input.SmallBlind || input.BigBlind > 100_000 {
+	if input.GameType == "" {
+		input.GameType = gameTypeTexasHoldem
+	}
+	if input.GameType != gameTypeTexasHoldem && input.GameType != gameTypeLandlord {
+		return &apiError{Status: http.StatusBadRequest, Message: "暂不支持这种游戏类型"}
+	}
+	if input.GameType == gameTypeTexasHoldem && (input.SmallBlind <= 0 || input.BigBlind < input.SmallBlind || input.BigBlind > 100_000) {
 		return &apiError{Status: http.StatusBadRequest, Message: "盲注设置不正确"}
+	}
+	if input.GameType == gameTypeLandlord && (input.BaseStake <= 0 || input.BaseStake > 100_000) {
+		return &apiError{Status: http.StatusBadRequest, Message: "底分需在 $0.01–$1,000 之间"}
 	}
 	actionTimeoutSeconds := poker.DefaultActionTimeoutSeconds
 	if input.ActionTimeoutSeconds != nil {
@@ -129,17 +151,27 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request, user 
 		return &apiError{Status: http.StatusBadRequest, Message: "行动时限需为 5–300 秒"}
 	}
 	tableID := uuid.NewString()
-	table := poker.NewTable(tableID, input.Name, input.SmallBlind, input.BigBlind)
-	if err := table.SetActionTimeoutSeconds(actionTimeoutSeconds); err != nil {
-		return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+	var runtime *tableRuntime
+	if input.GameType == gameTypeLandlord {
+		table := landlord.NewTable(tableID, input.Name, input.BaseStake)
+		if err := table.SetActionTimeoutSeconds(actionTimeoutSeconds); err != nil {
+			return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+		}
+		runtime = newLandlordRuntime(table)
+	} else {
+		table := poker.NewTable(tableID, input.Name, input.SmallBlind, input.BigBlind)
+		if err := table.SetActionTimeoutSeconds(actionTimeoutSeconds); err != nil {
+			return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+		}
+		runtime = newPokerRuntime(table)
 	}
-	if err := s.persistTable(r.Context(), space.ID, tableID, table); err != nil {
+	if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 		return err
 	}
 	s.tablesMu.Lock()
-	s.tables[tableRoomKey(space.ID, tableID)] = &tableRuntime{table: table}
+	s.tables[tableRoomKey(space.ID, tableID)] = runtime
 	s.tablesMu.Unlock()
-	writeJSON(w, http.StatusCreated, map[string]any{"table": summarizeTable(table.Snapshot(user.ID))})
+	writeJSON(w, http.StatusCreated, map[string]any{"table": summarizeRuntime(runtime, user.ID)})
 	return nil
 }
 
@@ -161,8 +193,15 @@ func (s *Server) handleDeleteTable(w http.ResponseWriter, r *http.Request, user 
 	if runtime.deleted {
 		return store.ErrNotFound
 	}
-	if len(runtime.table.Snapshot(user.ID).Players) > 0 {
-		return &apiError{Status: http.StatusConflict, Message: "牌桌还有玩家，请先让所有玩家结算离桌"}
+	players := runtime.commonSnapshot(user.ID).Players
+	if len(players) > 0 && r.URL.Query().Get("force") != "true" {
+		return &apiError{Status: http.StatusConflict, Message: "牌桌还有玩家；管理员可选择结算全部玩家后强制删除"}
+	}
+	if len(players) > 0 {
+		if _, _, err := s.settleAllPlayersLocked(r.Context(), space, tableID, runtime, user.ID, "管理员强制删除牌桌"); err != nil {
+			s.broadcast(space.ID, tableID, runtime)
+			return err
+		}
 	}
 	runtime.deleted = true
 	if err := s.store.DeleteTableState(r.Context(), space.ID, tableID); err != nil {
@@ -174,6 +213,9 @@ func (s *Server) handleDeleteTable(w http.ResponseWriter, r *http.Request, user 
 		runtime.timer = nil
 	}
 	runtime.timerTurnID = 0
+	s.hub.Broadcast(tableRoomKey(space.ID, tableID), func(int64) any {
+		return map[string]any{"type": "table_deleted", "table_id": tableID}
+	})
 	s.tablesMu.Lock()
 	key := tableRoomKey(space.ID, tableID)
 	if s.tables[key] == runtime {
@@ -181,6 +223,37 @@ func (s *Server) handleDeleteTable(w http.ResponseWriter, r *http.Request, user 
 	}
 	s.tablesMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Server) handleClearTable(w http.ResponseWriter, r *http.Request, user store.User) error {
+	space, err := s.spaceForActor(r.Context(), r.PathValue("spaceID"), user)
+	if err != nil {
+		return err
+	}
+	if !space.CanManage {
+		return &apiError{Status: http.StatusForbidden, Message: "只有频道管理员可以清空牌桌"}
+	}
+	tableID := tableIDFromRequest(r)
+	runtime, err := s.runtimeForTable(r.Context(), space.ID, tableID)
+	if err != nil {
+		return err
+	}
+	if err := lockTableRuntime(runtime); err != nil {
+		return err
+	}
+	defer runtime.mu.Unlock()
+	settledPlayers, settledCents, err := s.settleAllPlayersLocked(r.Context(), space, tableID, runtime, user.ID, "管理员强制清空牌桌")
+	if err != nil {
+		s.broadcast(space.ID, tableID, runtime)
+		return err
+	}
+	s.broadcast(space.ID, tableID, runtime)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settled_players": settledPlayers,
+		"settled_cents":   settledCents,
+		"table":           summarizeRuntime(runtime, user.ID),
+	})
 	return nil
 }
 
@@ -206,6 +279,12 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 	if err != nil {
 		return err
 	}
+	tableID := tableIDFromRequest(r)
+	releaseJoin, err := s.reserveTableJoin(r.Context(), space.ID, tableID, user.ID)
+	if err != nil {
+		return err
+	}
+	defer releaseJoin()
 	var input struct {
 		BuyIn int64 `json:"buy_in_cents"`
 	}
@@ -219,7 +298,6 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 	if err != nil {
 		return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
 	}
-	tableID := tableIDFromRequest(r)
 	runtime, err := s.runtimeForTable(r.Context(), space.ID, tableID)
 	if err != nil {
 		return err
@@ -237,7 +315,7 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 	} else if !until.IsZero() {
 		delete(runtime.kickedUntil, user.ID)
 	}
-	if runtime.table.IsSeated(user.ID) {
+	if runtime.isSeated(user.ID) {
 		return &apiError{Status: http.StatusConflict, Message: "你已经在牌桌上"}
 	}
 	current, err := s.newAPI.Self(r.Context(), space.BaseURL, memberToken)
@@ -263,7 +341,7 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", err.Error())
 		return &apiError{Status: http.StatusBadGateway, Message: "New API 扣款未确认，已停止自动重试，请频道管理员核对操作 " + operationID}
 	}
-	if _, err := runtime.table.Join(user.ID, user.DisplayName, input.BuyIn); err != nil {
+	if _, err := runtime.join(user.ID, user.DisplayName, input.BuyIn); err != nil {
 		refundErr := s.newAPI.AdjustQuota(r.Context(), space.BaseURL, adminToken, member.NewAPIUserID, quota, true)
 		status := "compensated"
 		message := err.Error()
@@ -272,10 +350,10 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 			message += "; refund: " + refundErr.Error()
 		}
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, status, message)
-		return pokerAPIError(err)
+		return tableGameAPIError(err)
 	}
-	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
-		_, _ = runtime.table.Leave(user.ID)
+	if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
+		_, _ = runtime.leave(user.ID)
 		refundErr := s.newAPI.AdjustQuota(r.Context(), space.BaseURL, adminToken, member.NewAPIUserID, quota, true)
 		status := "compensated"
 		message := err.Error()
@@ -290,8 +368,33 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 		s.logger.Error("mark buy-in operation complete", "operation_id", operationID, "error", err)
 	}
 	s.broadcast(space.ID, tableID, runtime)
-	writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "table": runtime.table.Snapshot(user.ID)})
+	writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "table": runtime.snapshot(user.ID)})
 	return nil
+}
+
+func (s *Server) reserveTableJoin(ctx context.Context, spaceID, tableID string, userID int64) (func(), error) {
+	key := tableJoinKey{spaceID: spaceID, userID: userID}
+	s.tableJoinMu.Lock()
+	defer s.tableJoinMu.Unlock()
+	if _, exists := s.tableJoinInFlight[key]; exists {
+		return nil, &apiError{Status: http.StatusConflict, Message: "另一个入座请求正在处理中"}
+	}
+	seatedTableID, seated, err := s.userSeatedTableInSpace(ctx, spaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if seated {
+		if seatedTableID == tableID {
+			return nil, &apiError{Status: http.StatusConflict, Message: "你已经在牌桌上"}
+		}
+		return nil, &apiError{Status: http.StatusConflict, Message: "你已经在当前频道的其他牌桌上，请先离桌"}
+	}
+	s.tableJoinInFlight[key] = struct{}{}
+	return func() {
+		s.tableJoinMu.Lock()
+		delete(s.tableJoinInFlight, key)
+		s.tableJoinMu.Unlock()
+	}, nil
 }
 
 func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user store.User) error {
@@ -308,23 +411,23 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		return err
 	}
 	defer runtime.mu.Unlock()
-	stack, seated := runtime.table.StackFor(user.ID)
+	stack, seated := runtime.stackFor(user.ID)
 	if !seated {
 		return &apiError{Status: http.StatusConflict, Message: "你不在牌桌上"}
 	}
-	if !runtime.table.Snapshot(user.ID).CanLeave {
+	if !runtime.commonSnapshot(user.ID).CanLeave {
 		return &apiError{Status: http.StatusConflict, Message: "一手牌进行中，暂时不能离桌"}
 	}
 	if stack == 0 {
-		if _, err := runtime.table.Leave(user.ID); err != nil {
-			return pokerAPIError(err)
+		if _, err := runtime.leave(user.ID); err != nil {
+			return tableGameAPIError(err)
 		}
-		if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
+		if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 			return err
 		}
 		runtime.kickVote = nil
 		s.broadcast(space.ID, tableID, runtime)
-		writeJSON(w, http.StatusOK, map[string]any{"settled_cents": 0, "table": runtime.table.Snapshot(user.ID)})
+		writeJSON(w, http.StatusOK, map[string]any{"settled_cents": 0, "table": runtime.snapshot(user.ID)})
 		return nil
 	}
 	quota, err := newapi.CentsToQuota(stack, space.QuotaPerUSD)
@@ -344,12 +447,12 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", err.Error())
 		return &apiError{Status: http.StatusBadGateway, Message: "New API 结算未确认，玩家仍保留在牌桌，请频道管理员核对操作 " + operationID}
 	}
-	settled, err := runtime.table.Leave(user.ID)
+	settled, err := runtime.leave(user.ID)
 	if err != nil {
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", "balance credited but local leave failed: "+err.Error())
-		return pokerAPIError(err)
+		return tableGameAPIError(err)
 	}
-	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
+	if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return err
 	}
@@ -358,7 +461,7 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		s.logger.Error("mark cash-out operation complete", "operation_id", operationID, "error", err)
 	}
 	s.broadcast(space.ID, tableID, runtime)
-	writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "settled_cents": settled, "table": runtime.table.Snapshot(user.ID)})
+	writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "settled_cents": settled, "table": runtime.snapshot(user.ID)})
 	return nil
 }
 
@@ -376,14 +479,14 @@ func (s *Server) handleTableReady(w http.ResponseWriter, r *http.Request, user s
 		return err
 	}
 	defer runtime.mu.Unlock()
-	if _, err := runtime.table.Ready(user.ID); err != nil {
-		return pokerAPIError(err)
+	if _, err := runtime.ready(user.ID); err != nil {
+		return tableGameAPIError(err)
 	}
-	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
+	if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 		return err
 	}
 	if runtime.kickVote != nil {
-		target := runtime.table.Snapshot(runtime.kickVote.TargetUserID)
+		target := runtime.commonSnapshot(runtime.kickVote.TargetUserID)
 		targetReady := false
 		for _, player := range target.Players {
 			if player.UserID == runtime.kickVote.TargetUserID {
@@ -429,7 +532,7 @@ func (s *Server) handleTableKickVote(w http.ResponseWriter, r *http.Request, use
 		if runtime.kickVote != nil {
 			return &apiError{Status: http.StatusConflict, Message: "已有一项移出投票正在进行"}
 		}
-		vote, err := newKickVote(runtime.table.Snapshot(user.ID), user.ID, input.TargetUserID)
+		vote, err := newKickVote(runtime.commonSnapshot(user.ID), user.ID, input.TargetUserID)
 		if err != nil {
 			return err
 		}
@@ -461,7 +564,7 @@ func (s *Server) handleTableKickVote(w http.ResponseWriter, r *http.Request, use
 	notice := "投票已提交"
 	if len(vote.YesVoters) >= vote.RequiredYes {
 		runtime.kickVote = nil
-		settled, err := s.kickPlayerLocked(r.Context(), space, tableID, runtime, vote.TargetUserID, vote.InitiatorUserID)
+		settled, err := s.cashOutPlayerLocked(r.Context(), space, tableID, runtime, vote.TargetUserID, vote.InitiatorUserID, "经牌桌投票移出")
 		if err != nil {
 			s.broadcast(space.ID, tableID, runtime)
 			return err
@@ -480,17 +583,15 @@ func (s *Server) handleTableKickVote(w http.ResponseWriter, r *http.Request, use
 	}
 
 	s.broadcast(space.ID, tableID, runtime)
-	response := s.tableEnvelopeLocked(runtime, user.ID)
-	response.Notice = notice
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, s.tableEnvelopeWithNoticeLocked(runtime, user.ID, notice))
 	return nil
 }
 
-func newKickVote(snapshot poker.Snapshot, initiatorUserID, targetUserID int64) (*kickVote, error) {
+func newKickVote(snapshot runtimeSnapshot, initiatorUserID, targetUserID int64) (*kickVote, error) {
 	if !snapshot.CanLeave {
 		return nil, &apiError{Status: http.StatusConflict, Message: "只有等待开局时的在桌玩家可以发起投票"}
 	}
-	var initiator, target *poker.PlayerView
+	var initiator, target *runtimePlayerView
 	eligible := make(map[int64]struct{})
 	for index := range snapshot.Players {
 		player := &snapshot.Players[index]
@@ -525,10 +626,19 @@ func newKickVote(snapshot poker.Snapshot, initiatorUserID, targetUserID int64) (
 	}, nil
 }
 
-func (s *Server) kickPlayerLocked(ctx context.Context, space store.Space, tableID string, runtime *tableRuntime, targetUserID, actorUserID int64) (int64, error) {
-	stack, seated := runtime.table.StackFor(targetUserID)
-	if !seated || !runtime.table.Snapshot(targetUserID).CanLeave {
+func (s *Server) cashOutPlayerLocked(ctx context.Context, space store.Space, tableID string, runtime *tableRuntime, targetUserID, actorUserID int64, note string) (int64, error) {
+	stack, seated := runtime.stackFor(targetUserID)
+	if !seated || !runtime.commonSnapshot(targetUserID).CanLeave {
 		return 0, &apiError{Status: http.StatusConflict, Message: "目标玩家已经离桌或牌局已经开始"}
+	}
+	if stack == 0 {
+		if _, err := runtime.leave(targetUserID); err != nil {
+			return 0, tableGameAPIError(err)
+		}
+		if err := s.persistRuntime(ctx, space.ID, tableID, runtime); err != nil {
+			return 0, err
+		}
+		return 0, nil
 	}
 	member, err := s.store.Member(ctx, space.ID, targetUserID)
 	if err != nil {
@@ -546,7 +656,7 @@ func (s *Server) kickPlayerLocked(ctx context.Context, space store.Space, tableI
 	operation := store.WalletOperation{
 		ID: operationID, SpaceID: space.ID, TableID: tableID, UserID: targetUserID,
 		NewAPIUserID: member.NewAPIUserID, ActorUserID: actorUserID, Kind: "cash_out",
-		Cents: stack, Quota: quota, Note: "经牌桌投票移出", Status: "pending",
+		Cents: stack, Quota: quota, Note: note, Status: "pending",
 	}
 	if err := s.store.CreateWalletOperation(ctx, operation); err != nil {
 		return 0, err
@@ -555,12 +665,12 @@ func (s *Server) kickPlayerLocked(ctx context.Context, space store.Space, tableI
 		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", err.Error())
 		return 0, &apiError{Status: http.StatusBadGateway, Message: "余额结算未确认，玩家仍保留在牌桌，请频道管理员核对操作 " + operationID}
 	}
-	settled, err := runtime.table.Leave(targetUserID)
+	settled, err := runtime.leave(targetUserID)
 	if err != nil {
 		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local leave failed: "+err.Error())
-		return 0, pokerAPIError(err)
+		return 0, tableGameAPIError(err)
 	}
-	if err := s.persistTable(ctx, space.ID, tableID, runtime.table); err != nil {
+	if err := s.persistRuntime(ctx, space.ID, tableID, runtime); err != nil {
 		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return 0, err
 	}
@@ -568,6 +678,37 @@ func (s *Server) kickPlayerLocked(ctx context.Context, space store.Space, tableI
 		s.logger.Error("mark vote kick cash-out complete", "operation_id", operationID, "error", err)
 	}
 	return settled, nil
+}
+
+func (s *Server) settleAllPlayersLocked(ctx context.Context, space store.Space, tableID string, runtime *tableRuntime, actorUserID int64, note string) (int, int64, error) {
+	snapshot := runtime.commonSnapshot(actorUserID)
+	if snapshot.HandActive {
+		return 0, 0, &apiError{Status: http.StatusConflict, Message: "一手牌正在进行，请等待本手结束后再清理牌桌"}
+	}
+	runtime.kickVote = nil
+	settledPlayers := 0
+	settledCents := int64(0)
+	for _, player := range snapshot.Players {
+		settled, err := s.cashOutPlayerLocked(ctx, space, tableID, runtime, player.UserID, actorUserID, note)
+		if err != nil {
+			return settledPlayers, settledCents, settlementProgressError(settledPlayers, err)
+		}
+		settledPlayers++
+		settledCents += settled
+	}
+	return settledPlayers, settledCents, nil
+}
+
+func settlementProgressError(settledPlayers int, err error) error {
+	if settledPlayers == 0 {
+		return err
+	}
+	message := fmt.Sprintf("已结算并移出 %d 名玩家，后续结算已停止：%s", settledPlayers, err.Error())
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return &apiError{Status: apiErr.Status, Message: message}
+	}
+	return errors.New(message)
 }
 
 func formatCents(cents int64) string {
@@ -579,10 +720,7 @@ func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user 
 	if err != nil {
 		return err
 	}
-	var input struct {
-		Action poker.ActionType `json:"action"`
-		Amount int64            `json:"amount_cents"`
-	}
+	var input gameActionInput
 	if err := decodeJSON(r, &input); err != nil {
 		return err
 	}
@@ -595,10 +733,10 @@ func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user 
 		return err
 	}
 	defer runtime.mu.Unlock()
-	if err := runtime.table.Act(user.ID, input.Action, input.Amount); err != nil {
-		return pokerAPIError(err)
+	if err := runtime.act(user.ID, input); err != nil {
+		return tableGameAPIError(err)
 	}
-	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
+	if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 		return err
 	}
 	s.syncTableTimerLocked(space.ID, tableID, runtime)
@@ -647,11 +785,10 @@ func (s *Server) runtimeForTable(ctx context.Context, spaceID, tableID string) (
 	if err != nil {
 		return nil, err
 	}
-	table, err := poker.RestoreTable(data)
+	runtime, err := restoreTableRuntime(data)
 	if err != nil {
 		return nil, err
 	}
-	runtime := &tableRuntime{table: table}
 	s.tables[key] = runtime
 	runtime.mu.Lock()
 	s.syncTableTimerLocked(spaceID, tableID, runtime)
@@ -667,15 +804,31 @@ func (s *Server) persistTable(ctx context.Context, spaceID, tableID string, tabl
 	return s.store.SaveTableState(ctx, spaceID, tableID, data)
 }
 
+func (s *Server) persistRuntime(ctx context.Context, spaceID, tableID string, runtime *tableRuntime) error {
+	data, err := runtime.marshalState()
+	if err != nil {
+		return err
+	}
+	return s.store.SaveTableState(ctx, spaceID, tableID, data)
+}
+
 func (s *Server) broadcast(spaceID, tableID string, runtime *tableRuntime) {
 	s.hub.Broadcast(tableRoomKey(spaceID, tableID), func(viewerID int64) any {
 		return s.tableEnvelopeLocked(runtime, viewerID)
 	})
 }
 
-func (s *Server) tableEnvelopeLocked(runtime *tableRuntime, viewerID int64) tableEnvelope {
+func (s *Server) tableEnvelopeLocked(runtime *tableRuntime, viewerID int64) any {
+	return s.tableEnvelopeWithNoticeLocked(runtime, viewerID, "")
+}
+
+func (s *Server) tableEnvelopeWithNoticeLocked(runtime *tableRuntime, viewerID int64, notice string) any {
 	clearExpiredKickVoteLocked(runtime)
-	return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID), KickVote: kickVoteForViewer(runtime.kickVote, viewerID)}
+	vote := kickVoteForViewer(runtime.kickVote, viewerID)
+	if runtime.landlord != nil {
+		return landlordTableEnvelope{Type: "table", Table: runtime.landlord.Snapshot(viewerID), KickVote: vote, Notice: notice}
+	}
+	return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID), KickVote: vote, Notice: notice}
 }
 
 func clearExpiredKickVoteLocked(runtime *tableRuntime) {
@@ -710,7 +863,7 @@ func (s *Server) syncTableTimerLocked(spaceID, tableID string, runtime *tableRun
 		runtime.timer = nil
 	}
 	runtime.timerTurnID = 0
-	snapshot := runtime.table.Snapshot(0)
+	snapshot := runtime.commonSnapshot(0)
 	if snapshot.ActingSeat < 0 || snapshot.ActionDeadlineAt <= 0 || snapshot.TurnID == 0 {
 		return
 	}
@@ -732,7 +885,7 @@ func (s *Server) handleTableTimeout(spaceID, tableID string, runtime *tableRunti
 	}
 	runtime.timer = nil
 	runtime.timerTurnID = 0
-	action, applied, err := runtime.table.Timeout(turnID, time.Now())
+	action, applied, err := runtime.timeout(turnID, time.Now())
 	if err != nil {
 		s.logger.Error("apply table action timeout", "space_id", spaceID, "table_id", tableID, "turn_id", turnID, "error", err)
 		return
@@ -743,7 +896,7 @@ func (s *Server) handleTableTimeout(spaceID, tableID string, runtime *tableRunti
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.persistTable(ctx, spaceID, tableID, runtime.table); err != nil {
+	if err := s.persistRuntime(ctx, spaceID, tableID, runtime); err != nil {
 		s.logger.Error("persist table action timeout", "space_id", spaceID, "table_id", tableID, "turn_id", turnID, "action", action, "error", err)
 	}
 	s.broadcast(spaceID, tableID, runtime)
@@ -761,7 +914,8 @@ func tableRoomKey(spaceID, tableID string) string {
 	return spaceID + ":" + tableID
 }
 
-func summarizeTable(snapshot poker.Snapshot) tableSummary {
+func summarizeRuntime(runtime *tableRuntime, viewerID int64) tableSummary {
+	snapshot := runtime.commonSnapshot(viewerID)
 	players := make([]tableSeat, 0, len(snapshot.Players))
 	for _, player := range snapshot.Players {
 		players = append(players, tableSeat{
@@ -769,12 +923,14 @@ func summarizeTable(snapshot poker.Snapshot) tableSummary {
 			Name:   player.Name,
 			Seat:   player.Seat,
 			Stack:  player.Stack,
+			Ready:  player.Ready,
 		})
 	}
 	return tableSummary{
-		ID: snapshot.ID, Name: snapshot.Name, SmallBlind: snapshot.SmallBlind, BigBlind: snapshot.BigBlind,
+		ID: snapshot.ID, Name: snapshot.Name, GameType: snapshot.GameType,
+		SmallBlind: snapshot.SmallBlind, BigBlind: snapshot.BigBlind, BaseStake: snapshot.BaseStake,
 		ActionTimeoutSeconds: snapshot.ActionTimeoutSeconds,
-		PlayerCount:          len(snapshot.Players), MaxPlayers: poker.MaxSeats, HandID: snapshot.HandID, Street: snapshot.Street,
+		PlayerCount:          len(snapshot.Players), MaxPlayers: snapshot.MaxPlayers, HandID: snapshot.HandID, Street: snapshot.Phase,
 		ViewerSeated: snapshot.ViewerSeat >= 0, Players: players,
 	}
 }

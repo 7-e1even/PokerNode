@@ -32,6 +32,26 @@ func TestCentsToQuota(t *testing.T) {
 	}
 }
 
+func TestDeleteUserUsesAdminEndpoint(t *testing.T) {
+	deletedUserID := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/user/42" || r.Header.Get("Authorization") != "Bearer admin-pat" {
+			writeTestResponse(w, http.StatusBadRequest, false, "unexpected request", nil)
+			return
+		}
+		deletedUserID <- "42"
+		writeTestResponse(w, http.StatusOK, true, "", nil)
+	}))
+	defer upstream.Close()
+
+	if err := NewClient().DeleteUser(context.Background(), upstream.URL, "admin-pat", 42); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-deletedUserID; got != "42" {
+		t.Fatalf("New API user was not deleted, got %q", got)
+	}
+}
+
 func TestProvisionUserCreatesTokenAndRecoversExistingAccount(t *testing.T) {
 	var created bool
 	var storedUsername, storedPassword string

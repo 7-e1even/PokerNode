@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -324,6 +326,12 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, a
 	if err != nil {
 		return err
 	}
+	if r.URL.Query().Get("force") == "true" {
+		if actor.Role != string(access.RoleSuperAdmin) {
+			return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以强制删除账号"}
+		}
+		return s.forceDeleteUser(w, r, actor, target)
+	}
 	canManageRoles, err := s.hasPermission(r.Context(), actor, access.PermissionRolesManage)
 	if err != nil {
 		return err
@@ -343,6 +351,91 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, a
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+func (s *Server) forceDeleteUser(w http.ResponseWriter, r *http.Request, actor, target store.User) error {
+	spaceID, tableID, seated, err := s.userTableSeat(r.Context(), target.ID)
+	if err != nil {
+		return err
+	}
+	if seated {
+		return &apiError{Status: http.StatusConflict, Message: fmt.Sprintf("该账号仍在牌桌 %s/%s 中，请先完成结算并清空座位", spaceID, tableID)}
+	}
+
+	bindings, err := s.store.NewAPIUserBindings(r.Context(), target.ID)
+	if err != nil {
+		return err
+	}
+	failures := make([]string, 0)
+	type bindingGroup struct {
+		label      string
+		candidates []store.NewAPIUserBinding
+	}
+	groups := make([]bindingGroup, 0, len(bindings))
+	groupIndex := make(map[string]int, len(bindings))
+	for _, binding := range bindings {
+		key := fmt.Sprintf("%s\x00%d", binding.BaseURL, binding.NewAPIUserID)
+		index, ok := groupIndex[key]
+		if !ok {
+			index = len(groups)
+			groupIndex[key] = index
+			groups = append(groups, bindingGroup{label: binding.SpaceName})
+		} else {
+			groups[index].label += " / " + binding.SpaceName
+		}
+		groups[index].candidates = append(groups[index].candidates, binding)
+	}
+	for _, group := range groups {
+		failure := "管理员凭证不可用"
+		deleted := false
+		for _, binding := range group.candidates {
+			adminToken, decryptErr := s.cipher.Decrypt(binding.AdminTokenEnc)
+			if decryptErr != nil {
+				s.logger.Error("decrypt New API credential for forced user deletion", "space_id", binding.SpaceID, "user_id", target.ID, "error", decryptErr)
+				continue
+			}
+			if deleteErr := s.newAPI.DeleteUser(r.Context(), binding.BaseURL, adminToken, binding.NewAPIUserID); deleteErr != nil {
+				s.logger.Warn("delete New API user during forced account deletion", "space_id", binding.SpaceID, "user_id", target.ID, "newapi_user_id", binding.NewAPIUserID, "error", deleteErr)
+				failure = deleteErr.Error()
+				continue
+			}
+			deleted = true
+			break
+		}
+		if !deleted {
+			failures = append(failures, group.label+"："+failure)
+		}
+	}
+	if len(failures) > 0 {
+		return &apiError{Status: http.StatusBadGateway, Message: "New API 账号删除失败，本地账号未删除：" + strings.Join(failures, "；")}
+	}
+
+	if err := s.store.ForceDeleteUser(r.Context(), target.ID, actor.ID); err != nil {
+		if errors.Is(err, store.ErrLastSuperAdmin) {
+			return &apiError{Status: http.StatusConflict, Message: "至少需要保留一名正常状态的超级管理员"}
+		}
+		s.logger.Error("finalize forced local user deletion", "user_id", target.ID, "actor_user_id", actor.ID, "error", err)
+		return &apiError{Status: http.StatusInternalServerError, Message: "New API 账号已删除，但本地账号注销失败；请检查服务日志后重试"}
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Server) userTableSeat(ctx context.Context, userID int64) (string, string, bool, error) {
+	states, err := s.store.TableStates(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, state := range states {
+		runtime, err := restoreTableRuntime(state.Data)
+		if err != nil {
+			return "", "", false, err
+		}
+		if runtime.isSeated(userID) {
+			return state.SpaceID, state.TableID, true, nil
+		}
+	}
+	return "", "", false, nil
 }
 
 func roleAllowsChannelAssignments(role store.Role) bool {

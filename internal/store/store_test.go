@@ -118,6 +118,58 @@ func TestUserDeletionGuards(t *testing.T) {
 	if err := database.DeleteUser(ctx, owner.ID); !errors.Is(err, ErrUserReferenced) {
 		t.Fatalf("deleting a channel owner returned %v", err)
 	}
+	if err := database.BindMember(ctx, Member{
+		SpaceID: "space-1", UserID: owner.ID, NewAPIUserID: 77, NewAPIUsername: "owner-api",
+		NewAPIDisplay: "Owner API", NewAPIRole: 1, UserTokenEnc: "encrypted-user", UserTokenLast4: "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := database.NewAPIUserBindings(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].NewAPIUserID != 77 || bindings[0].AdminTokenEnc != "encrypted" {
+		t.Fatalf("unexpected New API deletion bindings: %#v", bindings)
+	}
+	if err := database.CreateWalletOperation(ctx, WalletOperation{
+		ID: "audit-1", SpaceID: "space-1", UserID: owner.ID, NewAPIUserID: 77,
+		Kind: "buy_in", Cents: 100, Quota: 500_000, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ForceDeleteUser(ctx, owner.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	deletedOwner, err := database.UserByID(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deletedOwner.Status != "deleted" || deletedOwner.Role != "player" || !deletedOwner.RankingHidden || deletedOwner.Username == owner.Username {
+		t.Fatalf("forced deletion did not anonymize the account: %#v", deletedOwner)
+	}
+	space, err := database.SpaceByID(ctx, "space-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if space.OwnerUserID != admin.ID {
+		t.Fatalf("channel ownership was not transferred: %#v", space)
+	}
+	operations, err := database.WalletOperations(ctx, "space-1", owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != "audit-1" {
+		t.Fatalf("wallet audit was not retained: %#v", operations)
+	}
+	users, err := database.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.ID == owner.ID {
+			t.Fatalf("deleted account remained in account management: %#v", user)
+		}
+	}
 
 	player, err := database.CreateUser(ctx, "player", "Player", "hash", "player")
 	if err != nil {

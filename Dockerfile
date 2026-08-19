@@ -10,12 +10,14 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /pokernode ./cmd/pokernode
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /pokernode ./cmd/pokernode && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /pokernode-mcp ./cmd/pokernode-mcp
 
 FROM alpine:3.22
 RUN adduser -D -u 10001 pokernode && mkdir -p /app && chown -R pokernode:pokernode /app
 WORKDIR /app
 COPY --from=backend /pokernode /app/pokernode
+COPY --from=backend /pokernode-mcp /app/pokernode-mcp
 USER pokernode
 ENV POKERNODE_ADDR=:8080
 EXPOSE 8080

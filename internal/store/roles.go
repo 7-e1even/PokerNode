@@ -19,7 +19,7 @@ type Role struct {
 
 func (s *Store) Roles(ctx context.Context) ([]Role, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.key,r.name,r.description,r.permissions_json,r.system,
-(SELECT COUNT(*) FROM users u WHERE u.role=r.key),r.created_at,r.updated_at
+(SELECT COUNT(*) FROM users u WHERE u.role=r.key AND u.status<>'deleted'),r.created_at,r.updated_at
 FROM roles r ORDER BY r.system DESC,
 CASE r.key WHEN 'super_admin' THEN 0 WHEN 'channel_manager' THEN 1 WHEN 'operator' THEN 2 WHEN 'player' THEN 3 ELSE 4 END,
 r.created_at,r.key`)
@@ -46,7 +46,7 @@ func (s *Store) RoleByKey(ctx context.Context, key string) (Role, error) {
 	var role Role
 	var permissionsJSON string
 	err := s.db.QueryRowContext(ctx, `SELECT r.key,r.name,r.description,r.permissions_json,r.system,
-(SELECT COUNT(*) FROM users u WHERE u.role=r.key),r.created_at,r.updated_at FROM roles r WHERE r.key=$1`, key).
+(SELECT COUNT(*) FROM users u WHERE u.role=r.key AND u.status<>'deleted'),r.created_at,r.updated_at FROM roles r WHERE r.key=$1`, key).
 		Scan(&role.Key, &role.Name, &role.Description, &permissionsJSON, &role.System, &role.UserCount, &role.CreatedAt, &role.UpdatedAt)
 	if err != nil {
 		return Role{}, mapNotFound(err)

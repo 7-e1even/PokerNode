@@ -80,6 +80,26 @@ type Member struct {
 	PokerDisplayName string `json:"poker_display_name"`
 }
 
+type NewAPIUserBinding struct {
+	SpaceID       string
+	SpaceName     string
+	BaseURL       string
+	AdminTokenEnc string
+	NewAPIUserID  int64
+}
+
+type PersistedTableState struct {
+	SpaceID string
+	TableID string
+	Data    []byte
+}
+
+type MCPKey struct {
+	UserID    int64  `json:"user_id"`
+	Last4     string `json:"last4"`
+	CreatedAt string `json:"created_at"`
+}
+
 type WalletOperation struct {
 	ID           string `json:"id"`
 	SpaceID      string `json:"space_id"`
@@ -186,6 +206,12 @@ CREATE TABLE IF NOT EXISTS auth_identities (
   UNIQUE (provider, user_id)
 );
 CREATE INDEX IF NOT EXISTS auth_identities_user_idx ON auth_identities(user_id, provider);
+CREATE TABLE IF NOT EXISTS mcp_keys (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  key_hash BYTEA NOT NULL UNIQUE,
+  key_last4 TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -496,6 +522,37 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	return userByID(ctx, s.db, id)
 }
 
+func (s *Store) UserByMCPKeyHash(ctx context.Context, hash []byte) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden
+FROM mcp_keys k JOIN users u ON u.id=k.user_id LEFT JOIN roles r ON r.key=u.role
+WHERE k.key_hash=$1`, hash).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
+	return user, mapNotFound(err)
+}
+
+func (s *Store) MCPKeyForUser(ctx context.Context, userID int64) (MCPKey, error) {
+	var key MCPKey
+	err := s.db.QueryRowContext(ctx, `SELECT user_id,key_last4,created_at FROM mcp_keys WHERE user_id=$1`, userID).
+		Scan(&key.UserID, &key.Last4, &key.CreatedAt)
+	return key, mapNotFound(err)
+}
+
+func (s *Store) UpsertMCPKey(ctx context.Context, userID int64, hash []byte, last4 string) (MCPKey, error) {
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	var key MCPKey
+	err := s.db.QueryRowContext(ctx, `INSERT INTO mcp_keys(user_id,key_hash,key_last4,created_at) VALUES($1,$2,$3,$4)
+ON CONFLICT(user_id) DO UPDATE SET key_hash=EXCLUDED.key_hash,key_last4=EXCLUDED.key_last4,created_at=EXCLUDED.created_at
+RETURNING user_id,key_last4,created_at`, userID, hash, last4, createdAt).
+		Scan(&key.UserID, &key.Last4, &key.CreatedAt)
+	return key, err
+}
+
+func (s *Store) DeleteMCPKey(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_keys WHERE user_id=$1`, userID)
+	return err
+}
+
 type sqlQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -508,7 +565,7 @@ func userByID(ctx context.Context, queryer sqlQueryer, id int64) (User, error) {
 }
 
 func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role ORDER BY u.created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.status<>'deleted' ORDER BY u.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -634,6 +691,97 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
 		return err
 	}
 	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func (s *Store) NewAPIUserBindings(ctx context.Context, userID int64) ([]NewAPIUserBinding, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.space_id,s.name,s.newapi_base_url,s.admin_token_enc,m.newapi_user_id
+FROM space_members m JOIN spaces s ON s.id=m.space_id
+WHERE m.user_id=$1 AND m.newapi_user_id IS NOT NULL
+ORDER BY s.created_at,m.space_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bindings := make([]NewAPIUserBinding, 0)
+	for rows.Next() {
+		var binding NewAPIUserBinding
+		if err := rows.Scan(&binding.SpaceID, &binding.SpaceName, &binding.BaseURL, &binding.AdminTokenEnc, &binding.NewAPIUserID); err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, binding)
+	}
+	return bindings, rows.Err()
+}
+
+// ForceDeleteUser removes every login and channel relationship while retaining
+// the user row as an anonymized tombstone for wallet-operation audit records.
+func (s *Store) ForceDeleteUser(ctx context.Context, userID, replacementOwnerID int64) error {
+	if userID <= 0 || replacementOwnerID <= 0 || userID == replacementOwnerID {
+		return ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var role, status string
+	if err := tx.QueryRowContext(ctx, `SELECT role,status FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&role, &status); err != nil {
+		return mapNotFound(err)
+	}
+	if status == "deleted" {
+		return ErrNotFound
+	}
+	var replacementRole, replacementStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT role,status FROM users WHERE id=$1`, replacementOwnerID).Scan(&replacementRole, &replacementStatus); err != nil {
+		return mapNotFound(err)
+	}
+	if replacementRole != "super_admin" || replacementStatus != "active" {
+		return errors.New("replacement owner must be an active super administrator")
+	}
+	if role == "super_admin" && status == "active" {
+		var activeAdmins int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='super_admin' AND status='active'`).Scan(&activeAdmins); err != nil {
+			return err
+		}
+		if activeAdmins <= 1 {
+			return ErrLastSuperAdmin
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO space_members(space_id,user_id)
+SELECT id,$2 FROM spaces WHERE owner_user_id=$1
+ON CONFLICT(space_id,user_id) DO NOTHING`, userID, replacementOwnerID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE spaces SET owner_user_id=$2 WHERE owner_user_id=$1`, userID, replacementOwnerID); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM auth_identities WHERE user_id=$1`,
+		`DELETE FROM mcp_keys WHERE user_id=$1`,
+		`DELETE FROM space_managers WHERE user_id=$1`,
+		`DELETE FROM space_members WHERE user_id=$1`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, userID); err != nil {
+			return err
+		}
+	}
+	deletedUsername := fmt.Sprintf("deleted_%x", userID)
+	result, err := tx.ExecContext(ctx, `UPDATE users
+SET username=$1,display_name=$2,password_hash='!deleted',role='player',status='deleted',ranking_hidden=TRUE
+WHERE id=$3`, deletedUsername, fmt.Sprintf("已删除用户 #%d", userID), userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if affected == 0 {
 		return ErrNotFound
 	}
@@ -971,6 +1119,23 @@ func (s *Store) TableStateIDs(ctx context.Context, spaceID string) ([]string, er
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (s *Store) TableStates(ctx context.Context) ([]PersistedTableState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT space_id,table_id,state_json FROM table_states ORDER BY space_id,table_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := make([]PersistedTableState, 0)
+	for rows.Next() {
+		var state PersistedTableState
+		if err := rows.Scan(&state.SpaceID, &state.TableID, &state.Data); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
 }
 
 func mapNotFound(err error) error {

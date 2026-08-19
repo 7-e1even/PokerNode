@@ -69,6 +69,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   const [editing, setEditing] = useState<User | null>(null);
   const [deleting, setDeleting] = useState<User | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteForce, setDeleteForce] = useState(false);
   const [confirmCloseRegistration, setConfirmCloseRegistration] = useState(false);
   const [registrationBusy, setRegistrationBusy] = useState(false);
 
@@ -114,18 +115,20 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     }
   }
 
-  async function deleteUser() {
+  async function deleteUser(force = false) {
     if (!deleting) return;
+    setDeleteForce(force);
     setDeleteBusy(true);
     try {
-      await remove(`/api/admin/users/${deleting.id}`);
+      await remove(`/api/admin/users/${deleting.id}${force ? "?force=true" : ""}`);
       setOverview((current) => current ? withoutUser(current, deleting.id) : current);
-      toast.success(`已删除账号 @${deleting.username}`);
+      toast.success(force ? `已强制删除账号 @${deleting.username}` : `已删除账号 @${deleting.username}`);
       setDeleting(null);
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : "删除账号失败");
     } finally {
       setDeleteBusy(false);
+      setDeleteForce(false);
     }
   }
 
@@ -293,9 +296,13 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
           <AlertDialogHeader>
             <AlertDialogMedia><Trash2 /></AlertDialogMedia>
             <AlertDialogTitle>永久删除账号？</AlertDialogTitle>
-            <AlertDialogDescription>将删除 {deleting?.display_name}（@{deleting?.username}）及其频道成员关系。拥有频道或钱包流水的账号会被系统拒绝删除，请改为停用。</AlertDialogDescription>
+            <AlertDialogDescription>{currentUser.role === "super_admin" ? `普通删除会保留拥有频道或钱包流水的账号。强制删除将同时删除 ${deleting?.display_name}（@${deleting?.username}）在各频道绑定的 New API 用户、把其拥有的频道转交给你，并保留匿名化的钱包审计记录。` : `将删除 ${deleting?.display_name}（@${deleting?.username}）及其频道成员关系。拥有频道或钱包流水的账号会被系统拒绝删除，请改为停用。`}</AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel disabled={deleteBusy}>取消</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={deleteBusy} onClick={(event) => { event.preventDefault(); void deleteUser(); }}>{deleteBusy && <Spinner data-icon="inline-start" />}{deleteBusy ? "正在删除…" : "确认删除"}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction disabled={deleteBusy} onClick={(event) => { event.preventDefault(); void deleteUser(); }}>{deleteBusy && !deleteForce && <Spinner data-icon="inline-start" />}{deleteBusy && !deleteForce ? "正在删除…" : "普通删除"}</AlertDialogAction>
+            {currentUser.role === "super_admin" && <AlertDialogAction variant="destructive" disabled={deleteBusy} onClick={(event) => { event.preventDefault(); void deleteUser(true); }}>{deleteBusy && deleteForce && <Spinner data-icon="inline-start" />}{deleteBusy && deleteForce ? "正在强制删除…" : "强制删除（含 New API）"}</AlertDialogAction>}
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 

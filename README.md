@@ -1,6 +1,6 @@
 # PokerNode
 
-PokerNode 是一个最多 8 人的朋友局德州扑克系统：Go 服务端负责发牌、行动校验和结算，React 前端负责牌桌交互，并通过 New API 管理玩家余额。
+PokerNode 是一个朋友局游戏平台，现支持最多 8 人的德州扑克和 3 人斗地主：Go 服务端负责发牌、行动校验和结算，React 前端负责牌桌交互，并通过 New API 管理玩家余额。
 
 > 页面中的 `$` 是 New API quota 的换算显示，不代表法币。默认 `500,000 quota = $1.00`。
 
@@ -14,12 +14,13 @@ _演示账号、频道名称和账户余额已脱敏。_
 
 - 大厅、频道、邀请码和多牌桌
 - No-Limit Hold'em、全下、边池和摊牌结算
+- 3 人斗地主、叫分、常用牌型、炸弹/王炸与春天结算
 - 全员准备后自动开局，行动时限可设为 5–300 秒
 - New API 自动绑定、买入扣款和离桌返还
 - 账号、角色、加密凭证和资金记录
 - PostgreSQL 持久化、WebSocket 实时同步和移动端适配
 
-详细规则见 [德州扑克规则](docs/POKER_RULES.md)。
+详细规则见 [德州扑克规则](docs/POKER_RULES.md) 与 [斗地主规则](docs/LANDLORD_RULES.md)。
 
 ## Docker 部署
 
@@ -66,6 +67,10 @@ docker compose up -d
 4. 玩家加入频道、买入、准备，随后自动开局。
 
 管理员 Token 必须有用户管理和 quota 调整权限，普通模型调用密钥不能代替它。
+
+## MCP Agent
+
+站点在 `/mcp` 提供带每用户独立 Key 的 Streamable HTTP MCP，外部 Agent 可以用普通玩家身份读取牌桌、入座、准备、等待轮次并执行合法动作；本地 `stdio` 模式仍可选用。接入方式与安全边界见 [用 MCP Agent 打牌](docs/MCP_AGENT.md)。
 
 ## 可选：微信登录
 

@@ -88,7 +88,7 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request, user 
 		return err
 	}
 	s.tablesMu.Lock()
-	s.tables[tableRoomKey(space.ID, mainTableID)] = &tableRuntime{table: defaultTable}
+	s.tables[tableRoomKey(space.ID, mainTableID)] = newPokerRuntime(defaultTable)
 	s.tablesMu.Unlock()
 	space.IsOwner = true
 	space.CanManage = true
@@ -240,20 +240,25 @@ func (s *Server) handleBindMember(w http.ResponseWriter, r *http.Request, user s
 }
 
 func (s *Server) userSeatedInSpace(ctx context.Context, spaceID string, userID int64) (bool, error) {
+	_, seated, err := s.userSeatedTableInSpace(ctx, spaceID, userID)
+	return seated, err
+}
+
+func (s *Server) userSeatedTableInSpace(ctx context.Context, spaceID string, userID int64) (string, bool, error) {
 	tableIDs, err := s.store.TableStateIDs(ctx, spaceID)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	for _, tableID := range tableIDs {
 		runtime, err := s.runtimeForTable(ctx, spaceID, tableID)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
-		if runtime.table.IsSeated(userID) {
-			return true, nil
+		if runtime.isSeated(userID) {
+			return tableID, true, nil
 		}
 	}
-	return false, nil
+	return "", false, nil
 }
 
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request, user store.User) error {
