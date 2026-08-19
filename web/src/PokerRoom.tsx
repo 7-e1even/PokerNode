@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import {
   ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Copy, Crown, DoorOpen, History,
-  KeyRound, LogOut, Play, Server, Settings2, ShieldCheck,
+  KeyRound, LogOut, MoreHorizontal, Server, Settings2, ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -183,19 +184,19 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   }, [initialTable.id, space.id]);
 
   return (
-    <main className="poker-room flex h-svh min-h-160 flex-col overflow-hidden">
-      <header className="poker-toolbar z-20 flex min-h-14 items-center justify-between gap-3 px-2 sm:px-5">
-        <div className="flex min-w-0 items-center gap-2">
+    <main className="poker-room flex h-svh min-h-0 flex-col overflow-hidden">
+      <header className="poker-toolbar z-20 flex h-12 shrink-0 items-center justify-between gap-2 px-1.5 sm:px-3 md:h-14 md:px-5">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-2">
           <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
           <div className="min-w-0">
             <h1 className="block truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
-            <span className="block truncate text-xs text-muted-foreground">
+            <span className="hidden truncate text-xs text-muted-foreground md:block">
               {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
             </span>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5 md:gap-2">
           <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
             <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
             {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
@@ -206,14 +207,32 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
               <span className="hidden sm:inline">{balance ? money(balance.cents) : "—"}</span>
             </Button>
           )}
-          <IconButton label="牌桌规则" onClick={() => setRulesOpen(true)}><CircleHelp /></IconButton>
-          <IconButton label="资金记录" onClick={() => setHistoryOpen(true)}><History /></IconButton>
-          {space.can_manage && <IconButton label="频道设置" onClick={() => setSettingsOpen(true)}><Settings2 /></IconButton>}
-          <Button size="sm" variant="outline" onClick={onBack} className="hidden md:inline-flex"><DoorOpen data-icon="inline-start" />离开牌桌</Button>
+          <div className="hidden items-center gap-2 md:flex">
+            <IconButton label="牌桌规则" onClick={() => setRulesOpen(true)}><CircleHelp /></IconButton>
+            <IconButton label="资金记录" onClick={() => setHistoryOpen(true)}><History /></IconButton>
+            {space.can_manage && <IconButton label="频道设置" onClick={() => setSettingsOpen(true)}><Settings2 /></IconButton>}
+            <Button size="sm" variant="outline" onClick={onBack}><DoorOpen data-icon="inline-start" />离开牌桌</Button>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="ghost" className="md:hidden" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuGroup>
+                <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />牌桌规则</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setHistoryOpen(true)}><History />资金记录</DropdownMenuItem>
+                {space.can_manage && <DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 />频道设置</DropdownMenuItem>}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
-      <section className="poker-room__canvas relative min-h-0 flex-1 overflow-auto">
+      <section className="poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
         {table ? (
           <TableScene spaceID={space.id} tableID={initialTable.id} table={table} user={user} onError={reportError} onChanged={setTable} onBalanceChanged={() => void loadBalance()} />
         ) : (
@@ -254,11 +273,15 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
   const [burnEvent, setBurnEvent] = useState(0);
   const [chipFlights, setChipFlights] = useState<ChipFlight[]>([]);
   const [winnerStage, setWinnerStage] = useState<"announcement" | "crown" | null>(() => table.last_result ? "announcement" : null);
+  const secondsRemaining = useActionCountdown(table.action_deadline_at, table.turn_id);
   const boardTracking = useRef({ handID: table.hand_id, length: table.board?.length || 0 });
   const potTracking = useRef({ handID: table.hand_id, total: totalPotForAnimation(table), actingSeat: table.acting_seat });
   const chipFlightID = useRef(0);
   const chipFlightTimers = useRef(new Set<number>());
   const seated = table.viewer_seat >= 0;
+  const viewerPlayer = table.players.find((player) => player.user_id === user.id);
+  const fundedPlayers = table.players.filter((player) => player.stack_cents > 0);
+  const readyPlayers = fundedPlayers.filter((player) => player.ready);
   const allowed = table.allowed_actions;
   const actingPlayer = table.players.find((player) => player.seat === table.acting_seat);
   const resultHandID = table.last_result ? (table.last_result.hand_id ?? table.hand_id) : null;
@@ -358,7 +381,7 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
   const layouts = useMemo(() => playerLayouts(table), [table.players, table.viewer_seat]);
 
   return (
-    <div className="poker-scene relative mx-auto h-full min-h-144 w-full max-w-360 overflow-hidden">
+    <div className="poker-scene relative mx-auto h-full min-h-0 w-full max-w-360 overflow-hidden" data-actionable={allowed.can_act}>
       <div className="poker-hand-status absolute top-3 left-4 z-10 flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/95 px-2 py-1 shadow-sm" aria-live="polite">
         <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
         <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
@@ -443,18 +466,18 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
                     <span className="sm:hidden">{table.last_result ? `${resultMessage(table.last_result.message)} · ${money(table.last_result.pot_cents)}` : `准备第 ${table.hand_id + 1} 手`}</span>
                     <span className="hidden sm:inline">准备第 {table.hand_id + 1} 手</span>
                   </strong>
-                  <span className="block truncate text-xs text-muted-foreground"><span className="sm:hidden">第 {table.hand_id + 1} 手 · </span>庄位、SB 与 BB 将顺时针轮转</span>
+                  <span className="block truncate text-xs text-muted-foreground"><span className="sm:hidden">第 {table.hand_id + 1} 手 · </span>已准备 {readyPlayers.length}/{fundedPlayers.length}，全员准备后自动发牌</span>
                 </div>
                 <div className="flex shrink-0 items-center justify-end gap-1">
                   {table.can_leave && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}
-                  <Button className="rounded-full" size="lg" disabled={busy} onClick={() => void run("start")}>
-                    {busy ? <Spinner data-icon="inline-start" /> : <Play data-icon="inline-start" />}
-                    {busy ? "发牌中…" : "开始下一手"}
+                  <Button className="rounded-full" size="lg" disabled={busy || viewerPlayer?.ready} onClick={() => void run("ready")}>
+                    {busy ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                    {busy ? "准备中…" : viewerPlayer?.ready ? "已准备" : "准备"}
                   </Button>
                 </div>
               </>
             ) : (
-              <span className="flex items-center gap-2 whitespace-nowrap px-2 text-sm text-muted-foreground"><Clock3 aria-hidden="true" />{table.acting_seat >= 0 ? `等待 ${actingPlayer?.name || "其他玩家"} 行动` : "等待更多有筹码的玩家入座"}</span>
+              <span className="flex items-center gap-2 whitespace-nowrap px-2 text-sm text-muted-foreground"><Clock3 aria-hidden="true" />{table.acting_seat >= 0 ? `等待 ${actingPlayer?.name || "其他玩家"} 行动 · ${secondsRemaining ?? table.action_timeout_seconds} 秒` : "等待更多有筹码的玩家入座"}</span>
             )}
             {!table.can_start && table.can_leave && <Button className="rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}
           </div>
@@ -465,24 +488,25 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
         <div className="poker-action-region absolute left-1/2 z-10 flex w-[min(46rem,calc(100%-2rem))] -translate-x-1/2 flex-col items-center gap-2">
           {(allowed.can_bet || allowed.can_raise) && (
             <Card size="sm" className="w-full rounded-2xl py-0 shadow-md sm:rounded-full">
-              <CardContent className="flex flex-wrap items-center gap-2 p-2.5 sm:gap-3">
-                <div className="flex w-full flex-col px-1 sm:min-w-28 sm:w-auto">
+              <CardContent className="poker-bet-controls flex flex-wrap items-center gap-2 p-2.5 sm:gap-3">
+                <div className="poker-bet-heading flex w-full flex-col px-1 sm:min-w-28 sm:w-auto">
                   <strong className="text-xs">轮到你行动</strong>
                   <span className="text-[0.6875rem] text-muted-foreground">最小至 {money(allowed.min_raise_to_cents)}</span>
                 </div>
-                <ToggleGroup className="shrink-0" type="single" variant="outline" size="sm" aria-label="快捷下注比例" onValueChange={(value) => value && setAmount(quickAmount(table, Number(value)))}>
+                <ToggleGroup className="poker-quick-bets shrink-0" type="single" variant="outline" size="sm" aria-label="快捷下注比例" onValueChange={(value) => value && setAmount(quickAmount(table, Number(value)))}>
                   {quickBets.map(({ label, ratio }) => (
                     <ToggleGroupItem className="rounded-full" key={label} value={String(ratio)}>{label}</ToggleGroupItem>
                   ))}
                 </ToggleGroup>
                 <Separator orientation="vertical" className="hidden h-6 sm:block" />
-                <Slider aria-label={allowed.can_bet ? "下注金额" : "加注金额"} className="order-last w-full sm:order-none sm:min-w-24 sm:flex-1" min={allowed.min_raise_to_cents} max={allowed.max_raise_to_cents} step={50} value={[clamp(amount, allowed.min_raise_to_cents, allowed.max_raise_to_cents)]} onValueChange={(value) => setAmount(value[0])} />
-                <strong className="min-w-22 text-right">{money(amount)}</strong>
+                <Slider aria-label={allowed.can_bet ? "下注金额" : "加注金额"} className="poker-bet-slider order-last w-full sm:order-none sm:min-w-24 sm:flex-1" min={allowed.min_raise_to_cents} max={allowed.max_raise_to_cents} step={50} value={[clamp(amount, allowed.min_raise_to_cents, allowed.max_raise_to_cents)]} onValueChange={(value) => setAmount(value[0])} />
+                <strong className="poker-bet-amount min-w-22 text-right">{money(amount)}</strong>
               </CardContent>
             </Card>
           )}
           <Card size="sm" className="w-fit max-w-full rounded-2xl py-0 shadow-lg sm:rounded-full">
-            <CardContent className="flex flex-wrap items-center justify-center gap-2 p-2">
+            <CardContent className="poker-action-buttons flex flex-wrap items-center justify-center gap-2 p-2">
+              <Badge variant={(secondsRemaining ?? table.action_timeout_seconds) <= 5 ? "destructive" : "outline"} className="poker-turn-timer h-9 shrink-0 rounded-full px-3 tabular-nums"><Clock3 aria-hidden="true" />剩余 {secondsRemaining ?? table.action_timeout_seconds} 秒</Badge>
               {allowed.can_fold && <Button className="min-w-22 rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("action", { action: "fold", amount_cents: 0 })}>弃牌</Button>}
               {allowed.can_check && <Button className="min-w-22 rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("action", { action: "check", amount_cents: 0 })}>过牌</Button>}
               {allowed.can_call && <Button className="min-w-30 rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("action", { action: "call", amount_cents: 0 })}>跟注 {money(allowed.to_call_cents)}</Button>}
@@ -518,25 +542,27 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: 
     >
       {player.cards && player.cards.length > 0 && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2">{player.cards.map((card, index) => <PlayingCard card={card} dealIndex={holeCardDealIndex(table, player.seat, index)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-${index}-${card.rank}-${card.suit}`} />)}</div>}
       {!player.cards && player.in_hand && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2"><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 0)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-0`} /><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 1)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-1`} /></div>}
-      <Card size="sm" className={cn("relative w-30 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm md:w-max md:min-w-42 md:max-w-54", player.is_acting && "ring-2 ring-ring")}>
+      <Card size="sm" className="poker-seat-card relative w-34 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm md:w-max md:min-w-42 md:max-w-54" data-acting={player.is_acting ? "true" : undefined}>
         {isWinner && showWinnerCrown && <span className="poker-winner-crown absolute -top-4 left-1/2 grid size-7 -translate-x-1/2 place-items-center rounded-full bg-winner text-winner-foreground shadow-md" role="img" aria-label="本手赢家"><Crown aria-hidden="true" /></span>}
         <CardContent className="flex items-center gap-2 px-2">
-          <Avatar className="size-10">
+          <Avatar className="size-9 md:size-10">
             <AvatarFallback>{player.name.slice(0, 2).toUpperCase()}</AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
-            <strong className="block truncate text-sm">{player.name}{isViewer ? "（你）" : ""}</strong>
+            <div className="flex min-w-0 items-center gap-1">
+              <strong className="min-w-0 flex-1 truncate text-sm">{player.name}{isViewer ? "（你）" : ""}</strong>
+              {positions.length > 0 && (
+                <Badge variant={positions.some((position) => position.code === "BTN") ? "default" : "outline"} className="h-4 shrink-0 px-1 text-[0.5rem] md:h-5 md:px-1.5 md:text-[0.625rem]" aria-label={positions.map((position) => position.label).join("、")}>
+                  {positions.map((position) => position.code).join("/")}
+                </Badge>
+              )}
+            </div>
             <span className="block text-xs text-muted-foreground tabular-nums">{money(player.stack_cents)}</span>
           </div>
-          {positions.length > 0 && (
-            <div className="flex shrink-0 gap-1">
-              {positions.map((position) => <Badge key={position.code} variant={position.code === "BTN" ? "default" : "outline"} className="h-5 px-1.5 text-[0.625rem]" aria-label={position.label}>{position.code}</Badge>)}
-            </div>
-          )}
         </CardContent>
       </Card>
       {(action || player.bet_cents > 0) && (
-        <Badge variant={player.is_acting ? "outline" : "secondary"} className={cn("absolute whitespace-nowrap bg-background shadow-sm", seatBetClass(x, y))}>
+        <Badge variant={player.is_acting ? "outline" : "secondary"} className={cn("absolute max-w-40 truncate bg-background shadow-sm", seatBetClass(x, y))}>
           {action}{action && player.bet_cents > 0 ? " · " : ""}{player.bet_cents > 0 ? money(player.bet_cents) : ""}
         </Badge>
       )}
@@ -733,6 +759,7 @@ function RulesDialog({ open, table, onClose }: { open: boolean; table: TableStat
               <dt>盲注</dt><dd className="text-foreground">{table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "—"}</dd>
               <dt>位置</dt><dd><strong className="text-foreground">BTN</strong> 庄位，<strong className="text-foreground">SB</strong> 小盲，<strong className="text-foreground">BB</strong> 大盲；每手顺时针轮转。</dd>
               <dt>行动顺序</dt><dd>翻牌前从大盲左侧开始；翻牌后从庄位左侧仍在牌局的玩家开始。</dd>
+              <dt>行动时限</dt><dd>每次行动 {table ? `${table.action_timeout_seconds} 秒` : "—"}；超时能过牌则自动过牌，否则自动弃牌。</dd>
             </dl>
           </section>
           <Separator />
@@ -746,8 +773,8 @@ function RulesDialog({ open, table, onClose }: { open: boolean; table: TableStat
           </section>
           <Separator />
           <section className="flex flex-col gap-2" aria-labelledby="rules-next-hand">
-            <h3 id="rules-next-hand" className="font-semibold">开始下一手</h3>
-            <p className="text-muted-foreground">本手结算后，底部会出现“开始下一手”。任一仍在座玩家都可发起；至少需要 2 位有筹码玩家，庄位和盲注会自动轮转。</p>
+            <h3 id="rules-next-hand" className="font-semibold">准备下一手</h3>
+            <p className="text-muted-foreground">本手结算后，每位有筹码的在桌玩家都需要点击“准备”；全员准备后自动发牌，庄位和盲注会自动轮转。</p>
           </section>
         </div>
       </DialogContent>
@@ -824,7 +851,7 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
 
 function TableLoading() {
   return (
-    <div className="mx-auto grid h-full min-h-144 min-w-192 place-items-center">
+    <div className="mx-auto grid h-full min-h-0 min-w-0 place-items-center">
       <div className="flex items-center gap-3 text-sm text-muted-foreground"><Spinner />正在布置牌桌…</div>
     </div>
   );
@@ -839,6 +866,24 @@ const quickBets = [
 
 function handIsActive(street: string) {
   return street === "preflop" || street === "flop" || street === "turn" || street === "river";
+}
+
+function useActionCountdown(deadlineAt: number, turnID: number) {
+  const [remaining, setRemaining] = useState<number | null>(() => secondsUntil(deadlineAt));
+
+  useEffect(() => {
+    const update = () => setRemaining(secondsUntil(deadlineAt));
+    update();
+    if (deadlineAt <= 0) return;
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [deadlineAt, turnID]);
+
+  return remaining;
+}
+
+function secondsUntil(deadlineAt: number) {
+  return deadlineAt > 0 ? Math.max(0, Math.ceil((deadlineAt - Date.now()) / 1000)) : null;
 }
 
 function boardDealIndex(street: string, cardIndex: number) {
@@ -875,8 +920,8 @@ function roundLayout(value: number) {
 }
 
 function seatBetClass(x: number, y: number) {
-  if (y <= 30) return "top-full left-1/2 mt-2 -translate-x-1/2";
-  if (y >= 70) return "bottom-full left-1/2 mb-2 -translate-x-1/2";
+  if (y <= 30) return "poker-seat-action--below-seat";
+  if (y >= 70) return "poker-seat-action--above-cards left-1/2 -translate-x-1/2";
   if (x >= 50) return "top-1/2 right-full mr-2 -translate-y-1/2";
   return "top-1/2 left-full ml-2 -translate-y-1/2";
 }
@@ -909,6 +954,7 @@ function seatPositions(table: TableState, seat: number) {
 }
 
 function playerActionLabel(player: Player) {
+  if (player.ready) return "已准备";
   switch (player.last_action) {
     case "fold": return "弃牌";
     case "check": return "过牌";

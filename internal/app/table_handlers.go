@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"pokernode/internal/newapi"
@@ -24,16 +25,17 @@ type tableEnvelope struct {
 }
 
 type tableSummary struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	SmallBlind   int64        `json:"small_blind_cents"`
-	BigBlind     int64        `json:"big_blind_cents"`
-	PlayerCount  int          `json:"player_count"`
-	MaxPlayers   int          `json:"max_players"`
-	HandID       int64        `json:"hand_id"`
-	Street       poker.Street `json:"street"`
-	ViewerSeated bool         `json:"viewer_seated"`
-	Players      []tableSeat  `json:"players"`
+	ID                   string       `json:"id"`
+	Name                 string       `json:"name"`
+	SmallBlind           int64        `json:"small_blind_cents"`
+	BigBlind             int64        `json:"big_blind_cents"`
+	ActionTimeoutSeconds int          `json:"action_timeout_seconds"`
+	PlayerCount          int          `json:"player_count"`
+	MaxPlayers           int          `json:"max_players"`
+	HandID               int64        `json:"hand_id"`
+	Street               poker.Street `json:"street"`
+	ViewerSeated         bool         `json:"viewer_seated"`
+	Players              []tableSeat  `json:"players"`
 }
 
 type tableSeat struct {
@@ -73,9 +75,10 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request, user 
 		return &apiError{Status: http.StatusForbidden, Message: "只有频道管理员可以创建牌桌"}
 	}
 	var input struct {
-		Name       string `json:"name"`
-		SmallBlind int64  `json:"small_blind_cents"`
-		BigBlind   int64  `json:"big_blind_cents"`
+		Name                 string `json:"name"`
+		SmallBlind           int64  `json:"small_blind_cents"`
+		BigBlind             int64  `json:"big_blind_cents"`
+		ActionTimeoutSeconds *int   `json:"action_timeout_seconds"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		return err
@@ -87,8 +90,18 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request, user 
 	if input.SmallBlind <= 0 || input.BigBlind < input.SmallBlind || input.BigBlind > 100_000 {
 		return &apiError{Status: http.StatusBadRequest, Message: "盲注设置不正确"}
 	}
+	actionTimeoutSeconds := poker.DefaultActionTimeoutSeconds
+	if input.ActionTimeoutSeconds != nil {
+		actionTimeoutSeconds = *input.ActionTimeoutSeconds
+	}
+	if actionTimeoutSeconds < poker.MinActionTimeoutSeconds || actionTimeoutSeconds > poker.MaxActionTimeoutSeconds {
+		return &apiError{Status: http.StatusBadRequest, Message: "行动时限需为 5–300 秒"}
+	}
 	tableID := uuid.NewString()
 	table := poker.NewTable(tableID, input.Name, input.SmallBlind, input.BigBlind)
+	if err := table.SetActionTimeoutSeconds(actionTimeoutSeconds); err != nil {
+		return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+	}
 	if err := s.persistTable(r.Context(), space.ID, tableID, table); err != nil {
 		return err
 	}
@@ -125,6 +138,11 @@ func (s *Server) handleDeleteTable(w http.ResponseWriter, r *http.Request, user 
 		runtime.deleted = false
 		return err
 	}
+	if runtime.timer != nil {
+		runtime.timer.Stop()
+		runtime.timer = nil
+	}
+	runtime.timerTurnID = 0
 	s.tablesMu.Lock()
 	key := tableRoomKey(space.ID, tableID)
 	if s.tables[key] == runtime {
@@ -302,7 +320,7 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 	return nil
 }
 
-func (s *Server) handleTableStart(w http.ResponseWriter, r *http.Request, user store.User) error {
+func (s *Server) handleTableReady(w http.ResponseWriter, r *http.Request, user store.User) error {
 	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
 	if err != nil {
 		return err
@@ -316,12 +334,13 @@ func (s *Server) handleTableStart(w http.ResponseWriter, r *http.Request, user s
 		return err
 	}
 	defer runtime.mu.Unlock()
-	if err := runtime.table.StartHand(user.ID); err != nil {
+	if _, err := runtime.table.Ready(user.ID); err != nil {
 		return pokerAPIError(err)
 	}
 	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
 		return err
 	}
+	s.syncTableTimerLocked(space.ID, tableID, runtime)
 	s.broadcast(space.ID, tableID, runtime)
 	writeJSON(w, http.StatusOK, tableEnvelope{Type: "table", Table: runtime.table.Snapshot(user.ID)})
 	return nil
@@ -354,6 +373,7 @@ func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user 
 	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
 		return err
 	}
+	s.syncTableTimerLocked(space.ID, tableID, runtime)
 	s.broadcast(space.ID, tableID, runtime)
 	writeJSON(w, http.StatusOK, tableEnvelope{Type: "table", Table: runtime.table.Snapshot(user.ID)})
 	return nil
@@ -403,6 +423,9 @@ func (s *Server) runtimeForTable(ctx context.Context, spaceID, tableID string) (
 	}
 	runtime := &tableRuntime{table: table}
 	s.tables[key] = runtime
+	runtime.mu.Lock()
+	s.syncTableTimerLocked(spaceID, tableID, runtime)
+	runtime.mu.Unlock()
 	return runtime, nil
 }
 
@@ -418,6 +441,52 @@ func (s *Server) broadcast(spaceID, tableID string, runtime *tableRuntime) {
 	s.hub.Broadcast(tableRoomKey(spaceID, tableID), func(viewerID int64) any {
 		return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID)}
 	})
+}
+
+func (s *Server) syncTableTimerLocked(spaceID, tableID string, runtime *tableRuntime) {
+	if runtime.timer != nil {
+		runtime.timer.Stop()
+		runtime.timer = nil
+	}
+	runtime.timerTurnID = 0
+	snapshot := runtime.table.Snapshot(0)
+	if snapshot.ActingSeat < 0 || snapshot.ActionDeadlineAt <= 0 || snapshot.TurnID == 0 {
+		return
+	}
+	delay := time.Until(time.UnixMilli(snapshot.ActionDeadlineAt))
+	if delay < 0 {
+		delay = 0
+	}
+	runtime.timerTurnID = snapshot.TurnID
+	runtime.timer = time.AfterFunc(delay, func() {
+		s.handleTableTimeout(spaceID, tableID, runtime, snapshot.TurnID)
+	})
+}
+
+func (s *Server) handleTableTimeout(spaceID, tableID string, runtime *tableRuntime, turnID uint64) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.deleted || runtime.timerTurnID != turnID {
+		return
+	}
+	runtime.timer = nil
+	runtime.timerTurnID = 0
+	action, applied, err := runtime.table.Timeout(turnID, time.Now())
+	if err != nil {
+		s.logger.Error("apply table action timeout", "space_id", spaceID, "table_id", tableID, "turn_id", turnID, "error", err)
+		return
+	}
+	if !applied {
+		s.syncTableTimerLocked(spaceID, tableID, runtime)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.persistTable(ctx, spaceID, tableID, runtime.table); err != nil {
+		s.logger.Error("persist table action timeout", "space_id", spaceID, "table_id", tableID, "turn_id", turnID, "action", action, "error", err)
+	}
+	s.broadcast(spaceID, tableID, runtime)
+	s.syncTableTimerLocked(spaceID, tableID, runtime)
 }
 
 func tableIDFromRequest(r *http.Request) string {
@@ -443,12 +512,16 @@ func summarizeTable(snapshot poker.Snapshot) tableSummary {
 	}
 	return tableSummary{
 		ID: snapshot.ID, Name: snapshot.Name, SmallBlind: snapshot.SmallBlind, BigBlind: snapshot.BigBlind,
-		PlayerCount: len(snapshot.Players), MaxPlayers: poker.MaxSeats, HandID: snapshot.HandID, Street: snapshot.Street,
+		ActionTimeoutSeconds: snapshot.ActionTimeoutSeconds,
+		PlayerCount:          len(snapshot.Players), MaxPlayers: poker.MaxSeats, HandID: snapshot.HandID, Street: snapshot.Street,
 		ViewerSeated: snapshot.ViewerSeat >= 0, Players: players,
 	}
 }
 
 func pokerAPIError(err error) error {
+	if errors.Is(err, poker.ErrActionTimedOut) {
+		return &apiError{Status: http.StatusConflict, Message: "本轮行动时间已结束"}
+	}
 	status := http.StatusBadRequest
 	if errors.Is(err, poker.ErrHandInProgress) || errors.Is(err, poker.ErrAlreadySeated) || errors.Is(err, poker.ErrNotYourTurn) {
 		status = http.StatusConflict

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"pokernode/internal/access"
 	"pokernode/internal/auth"
@@ -36,9 +37,11 @@ type Server struct {
 }
 
 type tableRuntime struct {
-	mu      sync.Mutex
-	table   *poker.Table
-	deleted bool
+	mu          sync.Mutex
+	table       *poker.Table
+	deleted     bool
+	timer       *time.Timer
+	timerTurnID uint64
 }
 
 type apiError struct {
@@ -109,14 +112,17 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("DELETE /api/spaces/{spaceID}/tables/{tableID}", s.withUser(s.handleDeleteTable))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/leave", s.withUser(s.handleTableLeave))
-	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/start", s.withUser(s.handleTableStart))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/ready", s.withUser(s.handleTableReady))
+	// Keep /start as a compatibility alias; it now records readiness rather than starting unilaterally.
+	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/start", s.withUser(s.handleTableReady))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/action", s.withUser(s.handleTableAction))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/tables/{tableID}/ws", s.withUser(s.handleWebSocket))
 	// Legacy routes keep existing installations on the default table.
 	mux.HandleFunc("GET /api/spaces/{spaceID}/table", s.withUser(s.handleTable))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/leave", s.withUser(s.handleTableLeave))
-	mux.HandleFunc("POST /api/spaces/{spaceID}/table/start", s.withUser(s.handleTableStart))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/table/ready", s.withUser(s.handleTableReady))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/table/start", s.withUser(s.handleTableReady))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/action", s.withUser(s.handleTableAction))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/ws", s.withUser(s.handleWebSocket))
 	mux.HandleFunc("GET /api/admin/overview", s.withPermission(access.PermissionAdminView, s.handleAdminOverview))

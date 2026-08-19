@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"pokernode/internal/auth"
+	"pokernode/internal/poker"
 	"pokernode/internal/secure"
 	"pokernode/internal/store"
 )
@@ -145,7 +146,8 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	appServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
+	application := NewServer(database, cipher, sessions, logger)
+	appServer := httptest.NewServer(application.Handler(filepath.Join(t.TempDir(), "missing-web")))
 	defer appServer.Close()
 	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/healthz", nil, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/readyz", nil, http.StatusOK, nil)
@@ -168,28 +170,33 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	spacePath := appServer.URL + "/api/spaces/" + createResult.Space.ID
 	var tablesResult struct {
 		Tables []struct {
-			ID      string `json:"id"`
-			Players []struct {
+			ID                   string `json:"id"`
+			ActionTimeoutSeconds int    `json:"action_timeout_seconds"`
+			Players              []struct {
 				Name string `json:"name"`
 				Seat int    `json:"seat"`
 			} `json:"players"`
 		} `json:"tables"`
 	}
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tablesResult)
-	if len(tablesResult.Tables) != 1 || tablesResult.Tables[0].ID != mainTableID {
+	if len(tablesResult.Tables) != 1 || tablesResult.Tables[0].ID != mainTableID || tablesResult.Tables[0].ActionTimeoutSeconds != poker.DefaultActionTimeoutSeconds {
 		t.Fatalf("expected the default table, got %#v", tablesResult.Tables)
 	}
 	var createTableResult struct {
 		Table struct {
-			ID string `json:"id"`
+			ID                   string `json:"id"`
+			ActionTimeoutSeconds int    `json:"action_timeout_seconds"`
 		} `json:"table"`
 	}
 	requestJSON(t, alice, http.MethodPost, spacePath+"/tables", map[string]any{
-		"name": "High Stakes", "small_blind_cents": 100, "big_blind_cents": 200,
+		"name": "High Stakes", "small_blind_cents": 100, "big_blind_cents": 200, "action_timeout_seconds": 37,
 	}, http.StatusCreated, &createTableResult)
-	if createTableResult.Table.ID == "" || createTableResult.Table.ID == mainTableID {
-		t.Fatal("expected a second table id")
+	if createTableResult.Table.ID == "" || createTableResult.Table.ID == mainTableID || createTableResult.Table.ActionTimeoutSeconds != 37 {
+		t.Fatalf("expected a second table with a 37 second action timeout, got %#v", createTableResult.Table)
 	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/tables", map[string]any{
+		"name": "Too Fast", "small_blind_cents": 100, "big_blind_cents": 200, "action_timeout_seconds": 4,
+	}, http.StatusBadRequest, nil)
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tablesResult)
 	if len(tablesResult.Tables) != 2 {
 		t.Fatalf("expected two tables, got %d", len(tablesResult.Tables))
@@ -296,15 +303,60 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	}
 	var started struct {
 		Table struct {
-			ViewerSeat int `json:"viewer_seat"`
-			ActingSeat int `json:"acting_seat"`
+			ViewerSeat int    `json:"viewer_seat"`
+			ActingSeat int    `json:"acting_seat"`
+			Street     string `json:"street"`
 		} `json:"table"`
 	}
-	requestJSON(t, alice, http.MethodPost, spacePath+"/table/start", map[string]any{}, http.StatusOK, &started)
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, &started)
+	if started.Table.Street != "waiting" || started.Table.ActingSeat >= 0 {
+		t.Fatalf("one ready player must not start the hand: %#v", started.Table)
+	}
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, alice, http.MethodGet, spacePath+"/table", nil, http.StatusOK, &started)
 	if started.Table.ViewerSeat != started.Table.ActingSeat {
 		t.Fatalf("expected Alice to act first heads-up, viewer=%d acting=%d", started.Table.ViewerSeat, started.Table.ActingSeat)
 	}
-	requestJSON(t, alice, http.MethodPost, spacePath+"/table/action", map[string]any{"action": "fold", "amount_cents": 0}, http.StatusOK, nil)
+	runtime, err := application.runtimeForTable(context.Background(), createResult.Space.ID, mainTableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	stateData, err := runtime.table.MarshalState()
+	if err != nil {
+		runtime.mu.Unlock()
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		runtime.mu.Unlock()
+		t.Fatal(err)
+	}
+	state["action_deadline_at"] = time.Now().Add(-time.Second).UnixMilli()
+	stateData, err = json.Marshal(state)
+	if err != nil {
+		runtime.mu.Unlock()
+		t.Fatal(err)
+	}
+	runtime.table, err = poker.RestoreTable(stateData)
+	if err != nil {
+		runtime.mu.Unlock()
+		t.Fatal(err)
+	}
+	application.syncTableTimerLocked(createResult.Space.ID, mainTableID, runtime)
+	runtime.mu.Unlock()
+
+	timeoutDeadline := time.Now().Add(2 * time.Second)
+	for {
+		requestJSON(t, alice, http.MethodGet, spacePath+"/table", nil, http.StatusOK, &started)
+		if started.Table.Street == "complete" {
+			break
+		}
+		if time.Now().After(timeoutDeadline) {
+			t.Fatal("server did not apply the expired turn automatically")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	requestJSON(t, alice, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
-  ArrowLeft, CircleDollarSign, Copy, Crown, Link2, Plus, Shuffle, Table2,
+  ArrowLeft, CircleDollarSign, Clock3, Copy, Crown, Link2, Plus, Shuffle, Table2,
   Trash2, Trophy,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -245,7 +245,7 @@ function TableMapTile({ table, onOpen, onDelete }: { table: TableSummary; onOpen
               <span className="table-map-surface"><strong>{money(table.small_blind_cents)}/{money(table.big_blind_cents)}</strong><small>{available ? (table.player_count > 0 ? `${table.player_count} 人入座` : "等待入座") : "已满"}</small></span>
               {players.map((player, index) => <MapSeat key={player.user_id} player={player} style={mapSeatStyle(index, players.length)} />)}
             </span>
-            <span className={cn("flex w-full items-center justify-between gap-2 text-xs text-muted-foreground", onDelete && "pr-7")}><span>{table.player_count > 0 ? "牌局进行中" : "等待玩家"}</span><span>{table.viewer_seated ? "你在此桌" : "点击进入"}</span></span>
+            <span className={cn("flex w-full items-center justify-between gap-2 text-xs text-muted-foreground", onDelete && "pr-7")}><span className="truncate">{table.player_count > 0 ? "牌局进行中" : "等待玩家"} · {table.action_timeout_seconds} 秒</span><span className="shrink-0">{table.viewer_seated ? "你在此桌" : "点击进入"}</span></span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>{playerNames ? `${playerNames} 正在这桌` : "空桌，点击入座"}</TooltipContent>
@@ -275,7 +275,7 @@ function mapSeatStyle(index: number, count: number): CSSProperties {
 }
 
 function CreateTableTile({ onCreate }: { onCreate: () => void }) {
-  return <Button variant="ghost" className="table-map-tile items-center justify-center" onClick={onCreate}><Avatar size="lg"><AvatarFallback>+</AvatarFallback></Avatar><strong>创建新牌桌</strong><span className="text-xs text-muted-foreground">设置名称和盲注</span></Button>;
+  return <Button variant="ghost" className="table-map-tile items-center justify-center" onClick={onCreate}><Avatar size="lg"><AvatarFallback>+</AvatarFallback></Avatar><strong>创建新牌桌</strong><span className="text-xs text-muted-foreground">设置名称、盲注和行动时限</span></Button>;
 }
 
 function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
@@ -331,6 +331,7 @@ function CreateTableDialog({ open, spaceID, onClose, onCreated }: { open: boolea
   const [name, setName] = useState("");
   const [smallBlind, setSmallBlind] = useState("0.50");
   const [bigBlind, setBigBlind] = useState("1.00");
+  const [actionTimeout, setActionTimeout] = useState("25");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -338,16 +339,22 @@ function CreateTableDialog({ open, spaceID, onClose, onCreated }: { open: boolea
     event.preventDefault();
     const small = Math.round(Number(smallBlind) * 100);
     const big = Math.round(Number(bigBlind) * 100);
+    const timeout = Number(actionTimeout);
     if (!Number.isFinite(small) || !Number.isFinite(big) || small <= 0 || big < small) {
       setError("请输入正确的大小盲金额");
+      return;
+    }
+    if (!Number.isInteger(timeout) || timeout < 5 || timeout > 300) {
+      setError("行动时限需为 5–300 秒之间的整数");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const result = await post<{ table: TableSummary }>(`/api/spaces/${spaceID}/tables`, { name, small_blind_cents: small, big_blind_cents: big });
+      const result = await post<{ table: TableSummary }>(`/api/spaces/${spaceID}/tables`, { name, small_blind_cents: small, big_blind_cents: big, action_timeout_seconds: timeout });
       onCreated(result.table);
       setName("");
+      setActionTimeout("25");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "创建牌桌失败");
     } finally {
@@ -366,6 +373,11 @@ function CreateTableDialog({ open, spaceID, onClose, onCreated }: { open: boolea
               <Field><FieldLabel htmlFor="small-blind">小盲（美元）</FieldLabel><Input id="small-blind" name="small-blind" type="number" min="0.01" step="0.01" value={smallBlind} onChange={(event) => setSmallBlind(event.target.value)} required /></Field>
               <Field><FieldLabel htmlFor="big-blind">大盲（美元）</FieldLabel><Input id="big-blind" name="big-blind" type="number" min="0.01" step="0.01" value={bigBlind} onChange={(event) => setBigBlind(event.target.value)} required /></Field>
             </div>
+            <Field data-invalid={error.startsWith("行动时限") || undefined}>
+              <FieldLabel htmlFor="action-timeout">行动时限（秒）</FieldLabel>
+              <Input id="action-timeout" name="action-timeout" type="number" min="5" max="300" step="1" inputMode="numeric" value={actionTimeout} onChange={(event) => setActionTimeout(event.target.value)} aria-invalid={error.startsWith("行动时限") || undefined} required />
+              <FieldDescription><Clock3 />每位玩家每次行动的倒计时；超时能过牌则自动过牌，否则自动弃牌。</FieldDescription>
+            </Field>
             <FieldDescription><CircleDollarSign />牌桌使用整数美分记账，不按 Token 数量展示。</FieldDescription>
             <FieldError>{error}</FieldError>
           </FieldGroup>

@@ -114,6 +114,7 @@ export interface Player {
   in_hand: boolean;
   folded: boolean;
   all_in: boolean;
+  ready: boolean;
   is_dealer: boolean;
   is_acting: boolean;
   last_action?: PokerAction;
@@ -149,6 +150,9 @@ export interface TableState {
   small_blind_seat: number;
   big_blind_seat: number;
   acting_seat: number;
+  action_timeout_seconds: number;
+  action_deadline_at: number;
+  turn_id: number;
   viewer_seat: number;
   players: Player[];
   allowed_actions: AllowedActions;
@@ -168,6 +172,7 @@ export interface TableSummary {
   name: string;
   small_blind_cents: number;
   big_blind_cents: number;
+  action_timeout_seconds: number;
   player_count: number;
   max_players: number;
   hand_id: number;

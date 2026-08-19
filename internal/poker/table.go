@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
-const MaxSeats = 8
+const (
+	MaxSeats                    = 8
+	DefaultActionTimeoutSeconds = 25
+	MinActionTimeoutSeconds     = 5
+	MaxActionTimeoutSeconds     = 300
+)
 
 type Street string
 
@@ -38,6 +44,7 @@ var (
 	ErrNotSeated      = errors.New("player is not seated")
 	ErrHandInProgress = errors.New("a hand is in progress")
 	ErrNotYourTurn    = errors.New("it is not your turn")
+	ErrActionTimedOut = errors.New("action time has expired")
 )
 
 type Player struct {
@@ -51,6 +58,7 @@ type Player struct {
 	InHand             bool       `json:"in_hand"`
 	Folded             bool       `json:"folded"`
 	AllIn              bool       `json:"all_in"`
+	Ready              bool       `json:"ready"`
 	LastAction         ActionType `json:"last_action,omitempty"`
 	LastActionAmount   int64      `json:"last_action_amount_cents,omitempty"`
 	LastActionBetLevel int        `json:"last_action_bet_level,omitempty"`
@@ -65,32 +73,36 @@ type HandResult struct {
 }
 
 type TableState struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	SmallBlind     int64             `json:"small_blind_cents"`
-	BigBlind       int64             `json:"big_blind_cents"`
-	HandID         int64             `json:"hand_id"`
-	Street         Street            `json:"street"`
-	Dealer         int               `json:"dealer"`
-	Acting         int               `json:"acting"`
-	CurrentBet     int64             `json:"current_bet_cents"`
-	MinRaise       int64             `json:"min_raise_cents"`
-	Board          []Card            `json:"board"`
-	Deck           []Card            `json:"deck"`
-	DeckPos        int               `json:"deck_pos"`
-	Seats          [MaxSeats]*Player `json:"seats"`
-	Acted          [MaxSeats]bool    `json:"acted"`
-	ActedAtBet     [MaxSeats]int64   `json:"acted_at_bet_cents"`
-	BetLevel       int               `json:"bet_level"`
-	SmallBlindSeat int               `json:"small_blind_seat"`
-	BigBlindSeat   int               `json:"big_blind_seat"`
-	PositionsSet   bool              `json:"positions_set,omitempty"`
-	LastResult     *HandResult       `json:"last_result,omitempty"`
+	ID                   string            `json:"id"`
+	Name                 string            `json:"name"`
+	SmallBlind           int64             `json:"small_blind_cents"`
+	BigBlind             int64             `json:"big_blind_cents"`
+	HandID               int64             `json:"hand_id"`
+	Street               Street            `json:"street"`
+	Dealer               int               `json:"dealer"`
+	Acting               int               `json:"acting"`
+	CurrentBet           int64             `json:"current_bet_cents"`
+	MinRaise             int64             `json:"min_raise_cents"`
+	Board                []Card            `json:"board"`
+	Deck                 []Card            `json:"deck"`
+	DeckPos              int               `json:"deck_pos"`
+	Seats                [MaxSeats]*Player `json:"seats"`
+	Acted                [MaxSeats]bool    `json:"acted"`
+	ActedAtBet           [MaxSeats]int64   `json:"acted_at_bet_cents"`
+	BetLevel             int               `json:"bet_level"`
+	SmallBlindSeat       int               `json:"small_blind_seat"`
+	BigBlindSeat         int               `json:"big_blind_seat"`
+	PositionsSet         bool              `json:"positions_set,omitempty"`
+	ActionTimeoutSeconds int               `json:"action_timeout_seconds"`
+	ActionDeadlineAt     int64             `json:"action_deadline_at"`
+	TurnID               uint64            `json:"turn_id"`
+	LastResult           *HandResult       `json:"last_result,omitempty"`
 }
 
 type Table struct {
 	mu    sync.RWMutex
 	state TableState
+	now   func() time.Time
 }
 
 type AllowedActions struct {
@@ -116,6 +128,7 @@ type PlayerView struct {
 	InHand             bool       `json:"in_hand"`
 	Folded             bool       `json:"folded"`
 	AllIn              bool       `json:"all_in"`
+	Ready              bool       `json:"ready"`
 	IsDealer           bool       `json:"is_dealer"`
 	IsActing           bool       `json:"is_acting"`
 	LastAction         ActionType `json:"last_action,omitempty"`
@@ -124,34 +137,37 @@ type PlayerView struct {
 }
 
 type Snapshot struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	SmallBlind     int64          `json:"small_blind_cents"`
-	BigBlind       int64          `json:"big_blind_cents"`
-	HandID         int64          `json:"hand_id"`
-	Street         Street         `json:"street"`
-	Board          []Card         `json:"board"`
-	Pot            int64          `json:"pot_cents"`
-	CurrentBet     int64          `json:"current_bet_cents"`
-	BetLevel       int            `json:"bet_level"`
-	DealerSeat     int            `json:"dealer_seat"`
-	SmallBlindSeat int            `json:"small_blind_seat"`
-	BigBlindSeat   int            `json:"big_blind_seat"`
-	ActingSeat     int            `json:"acting_seat"`
-	ViewerSeat     int            `json:"viewer_seat"`
-	Players        []PlayerView   `json:"players"`
-	Allowed        AllowedActions `json:"allowed_actions"`
-	CanStart       bool           `json:"can_start"`
-	CanLeave       bool           `json:"can_leave"`
-	LastResult     *HandResult    `json:"last_result,omitempty"`
+	ID                   string         `json:"id"`
+	Name                 string         `json:"name"`
+	SmallBlind           int64          `json:"small_blind_cents"`
+	BigBlind             int64          `json:"big_blind_cents"`
+	HandID               int64          `json:"hand_id"`
+	Street               Street         `json:"street"`
+	Board                []Card         `json:"board"`
+	Pot                  int64          `json:"pot_cents"`
+	CurrentBet           int64          `json:"current_bet_cents"`
+	BetLevel             int            `json:"bet_level"`
+	DealerSeat           int            `json:"dealer_seat"`
+	SmallBlindSeat       int            `json:"small_blind_seat"`
+	BigBlindSeat         int            `json:"big_blind_seat"`
+	ActingSeat           int            `json:"acting_seat"`
+	ActionTimeoutSeconds int            `json:"action_timeout_seconds"`
+	ActionDeadlineAt     int64          `json:"action_deadline_at"`
+	TurnID               uint64         `json:"turn_id"`
+	ViewerSeat           int            `json:"viewer_seat"`
+	Players              []PlayerView   `json:"players"`
+	Allowed              AllowedActions `json:"allowed_actions"`
+	CanStart             bool           `json:"can_start"`
+	CanLeave             bool           `json:"can_leave"`
+	LastResult           *HandResult    `json:"last_result,omitempty"`
 }
 
 func NewTable(id, name string, smallBlind, bigBlind int64) *Table {
 	return &Table{state: TableState{
 		ID: id, Name: name, SmallBlind: smallBlind, BigBlind: bigBlind,
 		Street: StreetWaiting, Dealer: -1, Acting: -1, MinRaise: bigBlind,
-		SmallBlindSeat: -1, BigBlindSeat: -1,
-	}}
+		SmallBlindSeat: -1, BigBlindSeat: -1, ActionTimeoutSeconds: DefaultActionTimeoutSeconds,
+	}, now: time.Now}
 }
 
 func RestoreTable(data []byte) (*Table, error) {
@@ -162,7 +178,35 @@ func RestoreTable(data []byte) (*Table, error) {
 	if state.ID == "" || state.SmallBlind <= 0 || state.BigBlind < state.SmallBlind {
 		return nil, errors.New("invalid persisted table state")
 	}
-	return &Table{state: state}, nil
+	if state.ActionTimeoutSeconds == 0 {
+		state.ActionTimeoutSeconds = DefaultActionTimeoutSeconds
+	}
+	if state.ActionTimeoutSeconds < MinActionTimeoutSeconds || state.ActionTimeoutSeconds > MaxActionTimeoutSeconds {
+		return nil, errors.New("invalid persisted action timeout")
+	}
+	table := &Table{state: state, now: time.Now}
+	if table.handActiveLocked() && table.state.Acting >= 0 {
+		if table.state.TurnID == 0 {
+			table.state.TurnID = 1
+		}
+		if table.state.ActionDeadlineAt <= 0 {
+			table.state.ActionDeadlineAt = table.now().Add(time.Duration(table.state.ActionTimeoutSeconds) * time.Second).UnixMilli()
+		}
+	}
+	return table, nil
+}
+
+func (t *Table) SetActionTimeoutSeconds(seconds int) error {
+	if seconds < MinActionTimeoutSeconds || seconds > MaxActionTimeoutSeconds {
+		return fmt.Errorf("action timeout must be between %d and %d seconds", MinActionTimeoutSeconds, MaxActionTimeoutSeconds)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.handActiveLocked() {
+		return ErrHandInProgress
+	}
+	t.state.ActionTimeoutSeconds = seconds
+	return nil
 }
 
 func (t *Table) MarshalState() ([]byte, error) {
@@ -185,6 +229,7 @@ func (t *Table) Join(userID int64, name string, buyIn int64) (int, error) {
 	}
 	for seat := range t.state.Seats {
 		if t.state.Seats[seat] == nil {
+			t.clearReadyLocked()
 			t.state.Seats[seat] = &Player{UserID: userID, Name: name, Seat: seat, Stack: buyIn}
 			return seat, nil
 		}
@@ -204,7 +249,47 @@ func (t *Table) Leave(userID int64) (int64, error) {
 	}
 	stack := t.state.Seats[seat].Stack
 	t.state.Seats[seat] = nil
+	t.clearReadyLocked()
 	return stack, nil
+}
+
+// Ready marks a funded player as ready and starts the hand once every funded
+// player at the table is ready. The returned boolean reports whether a hand
+// started.
+func (t *Table) Ready(userID int64) (bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.handActiveLocked() {
+		return false, ErrHandInProgress
+	}
+	seat := t.seatForUserLocked(userID)
+	if seat < 0 {
+		return false, ErrNotSeated
+	}
+	if t.state.Seats[seat].Stack <= 0 {
+		return false, errors.New("only funded players can ready")
+	}
+	active := t.playableSeatsLocked()
+	if len(active) < 2 {
+		return false, errors.New("at least two funded players are required")
+	}
+
+	t.state.Seats[seat].Ready = true
+	for _, activeSeat := range active {
+		if !t.state.Seats[activeSeat].Ready {
+			return false, nil
+		}
+	}
+	deck, err := shuffledDeck()
+	if err != nil {
+		t.state.Seats[seat].Ready = false
+		return false, err
+	}
+	if err := t.startHandLocked(userID, deck); err != nil {
+		t.state.Seats[seat].Ready = false
+		return false, err
+	}
+	return true, nil
 }
 
 func (t *Table) StartHand(userID int64) error {
@@ -247,6 +332,7 @@ func (t *Table) startHandLocked(userID int64, deck []Card) error {
 
 	for _, seat := range active {
 		player := t.state.Seats[seat]
+		player.Ready = false
 		player.Bet = 0
 		player.Committed = 0
 		player.Hole = nil
@@ -278,7 +364,7 @@ func (t *Table) startHandLocked(userID int64, deck []Card) error {
 	t.commitLocked(smallBlindSeat, t.state.SmallBlind)
 	t.commitLocked(bigBlindSeat, t.state.BigBlind)
 	t.state.CurrentBet = max(t.state.Seats[smallBlindSeat].Bet, t.state.Seats[bigBlindSeat].Bet)
-	t.state.Acting = t.nextNeedingActionLocked(bigBlindSeat)
+	t.setActingLocked(t.nextNeedingActionLocked(bigBlindSeat))
 	if t.state.Acting < 0 {
 		t.advanceStreetLocked()
 	}
@@ -288,6 +374,35 @@ func (t *Table) startHandLocked(userID int64, deck []Card) error {
 func (t *Table) Act(userID int64, action ActionType, amount int64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.actLocked(userID, action, amount, false)
+}
+
+// Timeout applies the safe automatic action for an expired turn. A stale timer
+// is ignored by matching the turn ID captured when that timer was scheduled.
+func (t *Table) Timeout(turnID uint64, now time.Time) (ActionType, bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.handActiveLocked() || t.state.Acting < 0 || turnID != t.state.TurnID {
+		return "", false, nil
+	}
+	if t.state.ActionDeadlineAt <= 0 || now.UnixMilli() < t.state.ActionDeadlineAt {
+		return "", false, nil
+	}
+	player := t.state.Seats[t.state.Acting]
+	if player == nil {
+		return "", false, errors.New("acting seat is empty")
+	}
+	action := ActionFold
+	if max(0, t.state.CurrentBet-player.Bet) == 0 {
+		action = ActionCheck
+	}
+	if err := t.actLocked(player.UserID, action, 0, true); err != nil {
+		return "", false, err
+	}
+	return action, true, nil
+}
+
+func (t *Table) actLocked(userID int64, action ActionType, amount int64, ignoreDeadline bool) error {
 	seat := t.seatForUserLocked(userID)
 	if seat < 0 {
 		return ErrNotSeated
@@ -297,6 +412,9 @@ func (t *Table) Act(userID int64, action ActionType, amount int64) error {
 	}
 	if seat != t.state.Acting {
 		return ErrNotYourTurn
+	}
+	if !ignoreDeadline && t.state.ActionDeadlineAt > 0 && !t.currentTimeLocked().Before(time.UnixMilli(t.state.ActionDeadlineAt)) {
+		return ErrActionTimedOut
 	}
 	player := t.state.Seats[seat]
 	toCall := max(0, t.state.CurrentBet-player.Bet)
@@ -362,7 +480,7 @@ func (t *Table) Act(userID int64, action ActionType, amount int64) error {
 		t.advanceStreetLocked()
 		return nil
 	}
-	t.state.Acting = t.nextNeedingActionLocked(seat)
+	t.setActingLocked(t.nextNeedingActionLocked(seat))
 	if t.state.Acting < 0 {
 		t.advanceStreetLocked()
 	}
@@ -381,7 +499,7 @@ func (t *Table) Snapshot(viewerID int64) Snapshot {
 		}
 		view := PlayerView{
 			UserID: player.UserID, Name: player.Name, Seat: seat, Stack: player.Stack,
-			Bet: player.Bet, InHand: player.InHand, Folded: player.Folded, AllIn: player.AllIn,
+			Bet: player.Bet, InHand: player.InHand, Folded: player.Folded, AllIn: player.AllIn, Ready: player.Ready,
 			IsDealer: seat == t.state.Dealer, IsActing: seat == t.state.Acting,
 			LastAction: player.LastAction, LastActionAmount: player.LastActionAmount,
 			LastActionBetLevel: player.LastActionBetLevel,
@@ -397,8 +515,10 @@ func (t *Table) Snapshot(viewerID int64) Snapshot {
 		HandID: t.state.HandID, Street: t.state.Street, Board: append([]Card(nil), t.state.Board...),
 		Pot: t.potLocked(), CurrentBet: t.state.CurrentBet, BetLevel: t.state.BetLevel,
 		DealerSeat: t.state.Dealer, SmallBlindSeat: smallBlindSeat, BigBlindSeat: bigBlindSeat,
-		ActingSeat: t.state.Acting, ViewerSeat: viewerSeat, Players: players,
-		Allowed: t.allowedActionsLocked(viewerID), CanStart: viewerSeat >= 0 && !t.handActiveLocked() && len(t.playableSeatsLocked()) >= 2,
+		ActingSeat: t.state.Acting, ActionTimeoutSeconds: t.state.ActionTimeoutSeconds,
+		ActionDeadlineAt: t.state.ActionDeadlineAt, TurnID: t.state.TurnID,
+		ViewerSeat: viewerSeat, Players: players,
+		Allowed: t.allowedActionsLocked(viewerID), CanStart: viewerSeat >= 0 && t.state.Seats[viewerSeat].Stack > 0 && !t.handActiveLocked() && len(t.playableSeatsLocked()) >= 2,
 		CanLeave: viewerSeat >= 0 && !t.handActiveLocked(), LastResult: cloneResult(t.state.LastResult),
 	}
 }
@@ -509,7 +629,7 @@ func (t *Table) advanceStreetLocked() {
 		t.finishShowdownLocked()
 		return
 	}
-	t.state.Acting = t.nextNeedingActionLocked(t.state.Dealer)
+	t.setActingLocked(t.nextNeedingActionLocked(t.state.Dealer))
 	if t.state.Acting < 0 {
 		for len(t.state.Board) < 5 {
 			t.dealNextBoardLocked()
@@ -637,10 +757,27 @@ func (t *Table) finishHandLocked() {
 		player.AllIn = false
 	}
 	t.state.CurrentBet = 0
-	t.state.Acting = -1
+	t.setActingLocked(-1)
 	t.state.Street = StreetComplete
 	t.state.Acted = [MaxSeats]bool{}
 	t.state.ActedAtBet = [MaxSeats]int64{}
+}
+
+func (t *Table) setActingLocked(seat int) {
+	t.state.Acting = seat
+	t.state.TurnID++
+	if seat < 0 {
+		t.state.ActionDeadlineAt = 0
+		return
+	}
+	t.state.ActionDeadlineAt = t.currentTimeLocked().Add(time.Duration(t.state.ActionTimeoutSeconds) * time.Second).UnixMilli()
+}
+
+func (t *Table) currentTimeLocked() time.Time {
+	if t.now != nil {
+		return t.now()
+	}
+	return time.Now()
 }
 
 func (t *Table) allowedActionsLocked(userID int64) AllowedActions {
@@ -727,6 +864,14 @@ func (t *Table) playableSeatsLocked() []int {
 		}
 	}
 	return seats
+}
+
+func (t *Table) clearReadyLocked() {
+	for _, player := range t.state.Seats {
+		if player != nil {
+			player.Ready = false
+		}
+	}
 }
 
 func (t *Table) seatForUserLocked(userID int64) int {

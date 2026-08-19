@@ -444,6 +444,16 @@
     transform-origin: bottom left;
   }
 
+  .poker-seat-action--above-cards {
+    bottom: calc(100% + 4.75rem);
+  }
+
+  .poker-seat-action--below-seat {
+    top: calc(100% + 0.5rem);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
   .poker-action-pod,
   .poker-action-region {
     bottom: max(1rem, env(safe-area-inset-bottom));
@@ -458,6 +468,10 @@
     border: 1px solid var(--border);
     background: color-mix(in oklch, var(--card) 96%, transparent);
     box-shadow: 0 12px 28px -22px oklch(0.2 0.01 250 / 32%);
+  }
+
+  .poker-seat-card[data-acting="true"] {
+    animation: poker-acting-seat-breathe 3.2s ease-in-out infinite;
   }
 
   .poker-seat [data-slot="avatar"] {
@@ -479,6 +493,23 @@
     100% {
       opacity: 1;
       transform: translate3d(0, 0, 0) scale(1) rotate(0);
+    }
+  }
+
+  @keyframes poker-acting-seat-breathe {
+    0%,
+    100% {
+      border-color: color-mix(in oklch, var(--ring) 44%, var(--border));
+      box-shadow:
+        0 12px 28px -22px oklch(0.2 0.01 250 / 32%),
+        0 0 0 1px color-mix(in oklch, var(--ring) 24%, transparent);
+    }
+
+    50% {
+      border-color: color-mix(in oklch, var(--ring) 82%, var(--border));
+      box-shadow:
+        0 12px 28px -22px oklch(0.2 0.01 250 / 32%),
+        0 0 0 1px color-mix(in oklch, var(--ring) 58%, transparent);
     }
   }
 
@@ -618,10 +649,15 @@
     }
 
     .poker-table-layout {
-      top: 40%;
-      width: calc(100% - 2rem);
-      height: 22rem;
+      top: 45%;
+      width: calc(100% - 1rem);
+      height: min(22rem, calc(100% - 9.5rem));
       aspect-ratio: auto;
+    }
+
+    .poker-scene[data-actionable="true"] .poker-table-layout {
+      top: 39%;
+      height: min(22rem, calc(100% - 14rem));
     }
 
     .poker-seat {
@@ -630,6 +666,10 @@
 
     .poker-hole-cards {
       bottom: calc(100% - 2.5rem);
+    }
+
+    .poker-seat-action--above-cards {
+      bottom: calc(100% + 3.5rem);
     }
 
     .poker-table-center {
@@ -643,7 +683,7 @@
 
   @media (max-width: 40rem) {
     .poker-toolbar {
-      min-height: 3.5rem;
+      min-height: 3rem;
     }
 
     .poker-hand-status {
@@ -652,6 +692,146 @@
 
     .poker-community-cards {
       gap: 0.35rem;
+    }
+  }
+
+  @media (min-width: 48.001rem) and (max-height: 45rem) {
+    .poker-table-layout {
+      top: 50%;
+      width: min(68vw, 46rem, calc((100svh - 18rem) * 1.785));
+    }
+
+    .poker-scene[data-actionable="true"] .poker-table-layout {
+      top: 42%;
+      width: min(64vw, 42rem, calc((100svh - 22rem) * 1.785));
+    }
+
+    .poker-seat-action--below-seat {
+      top: 50%;
+      left: calc(100% + 0.5rem);
+      transform: translateY(-50%);
+    }
+
+    .poker-seat {
+      scale: 0.86;
+    }
+  }
+
+  @media (max-width: 48rem) and (max-height: 32rem) {
+    .poker-table-layout {
+      height: min(22rem, calc(100% - 12rem));
+    }
+
+    .poker-scene[data-actionable="true"] .poker-table-layout {
+      height: min(22rem, calc(100% - 14rem));
+    }
+
+    .poker-seat {
+      scale: 0.68;
+    }
+
+    .poker-table-center {
+      scale: 0.76;
+    }
+  }
+
+  @media (max-width: 40rem) and (max-height: 40rem) and (orientation: portrait) {
+    .poker-table-layout {
+      top: 45%;
+      height: min(22rem, calc(100% - 14rem));
+    }
+
+    .poker-scene[data-actionable="true"] .poker-table-layout {
+      top: 32%;
+      height: min(22rem, calc(100% - 22.5rem));
+    }
+
+    .poker-scene[data-actionable="true"] .poker-seat {
+      scale: 0.68;
+    }
+
+    .poker-scene[data-actionable="true"] .poker-table-center {
+      scale: 0.72;
+    }
+
+    .poker-seat-action--below-seat {
+      top: 50%;
+      left: calc(100% + 0.5rem);
+      transform: translateY(-50%);
+    }
+  }
+
+  @media (max-width: 48rem) and (max-height: 28rem) and (orientation: landscape) {
+    .poker-scene .poker-table-layout,
+    .poker-scene[data-actionable="true"] .poker-table-layout {
+      top: 52%;
+      left: 29%;
+      width: 55%;
+      height: min(12rem, calc(100% - 5rem));
+    }
+
+    .poker-seat,
+    .poker-scene[data-actionable="true"] .poker-seat {
+      scale: 0.58;
+    }
+
+    .poker-table-center,
+    .poker-scene[data-actionable="true"] .poker-table-center {
+      scale: 0.62;
+    }
+
+    .poker-scene .poker-action-region {
+      right: 0.5rem;
+      bottom: 0.5rem;
+      left: auto;
+      width: 40%;
+      translate: 0;
+      gap: 0.35rem;
+    }
+
+    .poker-scene .poker-action-pod {
+      right: 0.5rem;
+      bottom: 0.5rem;
+      left: auto;
+      max-width: 40%;
+      translate: 0;
+    }
+
+    .poker-bet-controls {
+      flex-wrap: nowrap;
+      gap: 0.5rem;
+      padding: 0.5rem;
+    }
+
+    .poker-bet-heading {
+      display: none;
+    }
+
+    .poker-bet-controls .poker-bet-slider {
+      order: 0;
+      width: auto;
+      min-width: 3rem;
+      flex: 1;
+    }
+
+    .poker-bet-amount {
+      min-width: 4rem;
+      font-size: 0.875rem;
+    }
+
+    .poker-quick-bets {
+      display: none;
+    }
+
+    .poker-action-buttons {
+      flex-wrap: wrap;
+      gap: 0.375rem;
+      padding: 0.375rem;
+    }
+
+    .poker-action-buttons > button {
+      min-width: 0;
+      flex: 1 1 calc(50% - 0.375rem);
     }
   }
 
@@ -702,5 +882,57 @@
       animation-name: poker-crown-fade;
       animation-duration: 180ms;
     }
+
+  }
+}
+
+/* Utilities intentionally win inside Tailwind layers. These extreme landscape
+   overrides stay unlayered so the compact side controls can replace them. */
+@media (max-width: 48rem) and (max-height: 28rem) and (orientation: landscape) {
+  .poker-hand-status {
+    right: 0.5rem;
+    left: auto;
+    max-width: 40%;
+    gap: 0.25rem;
+    overflow: hidden;
+    font-size: 0.625rem;
+  }
+
+  .poker-scene .poker-table-layout {
+    left: 29%;
+  }
+
+  .poker-scene .poker-action-region,
+  .poker-scene .poker-action-pod {
+    right: 0.5rem;
+    left: auto;
+    width: 40%;
+    max-width: 40%;
+    translate: 0;
+  }
+
+  .poker-quick-bets {
+    display: none;
+  }
+
+  .poker-bet-controls .poker-bet-slider {
+    order: 0;
+    width: auto;
+    min-width: 3rem;
+    flex: 1;
+  }
+
+  .poker-bet-amount {
+    min-width: 4rem;
+  }
+
+  .poker-action-buttons > button {
+    min-width: 0;
+    flex: 1 1 calc(50% - 0.375rem);
+  }
+
+  .poker-turn-timer {
+    flex-basis: 100%;
+    justify-content: center;
   }
 }

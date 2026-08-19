@@ -1,8 +1,10 @@
 package poker
 
 import (
+	"encoding/json"
 	"math/rand"
 	"testing"
+	"time"
 )
 
 func TestHeadsUpFoldAwardsBlinds(t *testing.T) {
@@ -36,6 +38,131 @@ func TestHeadsUpFoldAwardsBlinds(t *testing.T) {
 	}
 }
 
+func TestAllFundedPlayersMustReadyBeforeHandStarts(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	_, _ = table.Join(3, "Cara", 10_000)
+
+	started, err := table.Ready(1)
+	if err != nil || started {
+		t.Fatalf("first ready should wait: started=%v err=%v", started, err)
+	}
+	started, err = table.Ready(2)
+	if err != nil || started {
+		t.Fatalf("second ready should wait: started=%v err=%v", started, err)
+	}
+	if snapshot := table.Snapshot(1); snapshot.Street != StreetWaiting || !snapshot.Players[0].Ready || !snapshot.Players[1].Ready {
+		t.Fatalf("table should remain waiting and expose ready players: %+v", snapshot)
+	}
+
+	started, err = table.Ready(3)
+	if err != nil || !started {
+		t.Fatalf("last ready should start the hand: started=%v err=%v", started, err)
+	}
+	snapshot := table.Snapshot(1)
+	if snapshot.Street != StreetPreflop {
+		t.Fatalf("expected preflop after everyone readied, got %s", snapshot.Street)
+	}
+	for _, player := range snapshot.Players {
+		if player.Ready {
+			t.Fatalf("ready state should reset when the hand starts: %+v", player)
+		}
+	}
+}
+
+func TestSeatChangesClearReadyState(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if _, err := table.Ready(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Join(3, "Cara", 10_000); err != nil {
+		t.Fatal(err)
+	}
+	for _, player := range table.Snapshot(1).Players {
+		if player.Ready {
+			t.Fatalf("joining should clear existing readiness: %+v", player)
+		}
+	}
+}
+
+func TestActionTimeoutFoldsWhenFacingBet(t *testing.T) {
+	current := time.Unix(1_800_000_000, 0)
+	table := NewTable("main", "Test", 50, 100)
+	table.now = func() time.Time { return current }
+	if err := table.SetActionTimeoutSeconds(17); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := table.Snapshot(1)
+	if snapshot.ActionTimeoutSeconds != 17 || snapshot.ActionDeadlineAt != current.Add(17*time.Second).UnixMilli() || snapshot.TurnID == 0 {
+		t.Fatalf("unexpected timeout state: %+v", snapshot)
+	}
+	if action, applied, err := table.Timeout(snapshot.TurnID, current.Add(16*time.Second)); err != nil || applied || action != "" {
+		t.Fatalf("turn must not expire early: action=%s applied=%v err=%v", action, applied, err)
+	}
+	current = current.Add(17 * time.Second)
+	action, applied, err := table.Timeout(snapshot.TurnID, current)
+	if err != nil || !applied || action != ActionFold {
+		t.Fatalf("expected automatic fold: action=%s applied=%v err=%v", action, applied, err)
+	}
+	if table.Snapshot(1).Street != StreetComplete {
+		t.Fatal("heads-up timeout fold should finish the hand")
+	}
+}
+
+func TestActionTimeoutChecksWhenNothingToCall(t *testing.T) {
+	current := time.Unix(1_800_000_000, 0)
+	table := NewTable("main", "Test", 50, 100)
+	table.now = func() time.Time { return current }
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+	oldTurnID := table.Snapshot(1).TurnID
+	if err := table.Act(1, ActionCall, 0); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := table.Snapshot(2)
+	if !snapshot.Allowed.CanCheck {
+		t.Fatalf("big blind should be able to check: %+v", snapshot.Allowed)
+	}
+	if _, applied, err := table.Timeout(oldTurnID, current.Add(time.Hour)); err != nil || applied {
+		t.Fatalf("stale turn timer must be ignored: applied=%v err=%v", applied, err)
+	}
+	current = time.UnixMilli(snapshot.ActionDeadlineAt)
+	action, applied, err := table.Timeout(snapshot.TurnID, current)
+	if err != nil || !applied || action != ActionCheck {
+		t.Fatalf("expected automatic check: action=%s applied=%v err=%v", action, applied, err)
+	}
+	after := table.Snapshot(2)
+	if after.Street != StreetFlop || after.TurnID == snapshot.TurnID || after.ActionDeadlineAt <= snapshot.ActionDeadlineAt {
+		t.Fatalf("automatic check should advance with a fresh deadline: before=%+v after=%+v", snapshot, after)
+	}
+}
+
+func TestActionAfterDeadlineIsRejected(t *testing.T) {
+	current := time.Unix(1_800_000_000, 0)
+	table := NewTable("main", "Test", 50, 100)
+	table.now = func() time.Time { return current }
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+	current = time.UnixMilli(table.Snapshot(1).ActionDeadlineAt)
+	if err := table.Act(1, ActionFold, 0); err != ErrActionTimedOut {
+		t.Fatalf("expected ErrActionTimedOut, got %v", err)
+	}
+}
+
 func TestStateRoundTrip(t *testing.T) {
 	table := NewTable("main", "Test", 50, 100)
 	_, _ = table.Join(1, "Alice", 10_000)
@@ -53,8 +180,40 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	before := table.Snapshot(1)
 	after := restored.Snapshot(1)
-	if before.HandID != after.HandID || before.Street != after.Street || before.Pot != after.Pot || len(after.Players) != 2 {
+	if before.HandID != after.HandID || before.Street != after.Street || before.Pot != after.Pot || before.ActionTimeoutSeconds != after.ActionTimeoutSeconds || before.ActionDeadlineAt != after.ActionDeadlineAt || before.TurnID != after.TurnID || len(after.Players) != 2 {
 		t.Fatalf("restored state differs: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRestoreLegacyActiveStateAddsActionDeadline(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+	data, err := table.MarshalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "action_timeout_seconds")
+	delete(legacy, "action_deadline_at")
+	delete(legacy, "turn_id")
+	data, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreTable(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := restored.Snapshot(1)
+	if snapshot.ActionTimeoutSeconds != DefaultActionTimeoutSeconds || snapshot.ActionDeadlineAt <= time.Now().UnixMilli() || snapshot.TurnID == 0 {
+		t.Fatalf("legacy active table did not receive a fresh timeout: %+v", snapshot)
 	}
 }
 
