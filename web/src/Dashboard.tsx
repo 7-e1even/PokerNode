@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, CheckCircle2, Copy, DoorOpen, Gamepad2, Link2, LogOut,
+  ArrowRight, CheckCircle2, Copy, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
   Menu, Plus, RadioTower, ShieldCheck,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -20,6 +20,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { BrandMark } from "@/components/brand-mark";
+import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
 import { WeChatIcon } from "@/components/wechat-icon";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -32,14 +33,16 @@ interface Props {
   onOpenSpace: (space: Space) => void;
   onOpenBindings: () => void;
   onOpenAdmin?: () => void;
+  onUserUpdated: (user: User) => void;
   onLogout: () => void;
 }
 
-export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpenBindings, onOpenAdmin, onLogout }: Props) {
+export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpenBindings, onOpenAdmin, onUserUpdated, onLogout }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -87,10 +90,13 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
         user={user}
         onOpenMenu={() => setMobileOpen(true)}
         onOpenBindings={onOpenBindings}
+        onOpenAccount={() => setAccountOpen(true)}
         onOpenAdmin={onOpenAdmin}
         wechatLoginEnabled={wechatLoginEnabled}
         onLogout={() => void logout()}
       />
+
+      <AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} />
 
       <div className="flex min-h-0 flex-1">
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -126,10 +132,11 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
   );
 }
 
-function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAdmin, wechatLoginEnabled, onLogout }: {
+function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdmin, wechatLoginEnabled, onLogout }: {
   user: User;
   onOpenMenu: () => void;
   onOpenBindings: () => void;
+  onOpenAccount: () => void;
   onOpenAdmin?: () => void;
   wechatLoginEnabled: boolean;
   onLogout: () => void;
@@ -148,7 +155,7 @@ function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAdmin, wechatLogin
         <DropdownMenuTrigger asChild>
           <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
+        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenAccount}><KeyRound />账号安全</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
       </DropdownMenu>
     </header>
   );

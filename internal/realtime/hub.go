@@ -26,10 +26,14 @@ func NewHub() *Hub {
 	return &Hub{clients: make(map[string]map[*client]struct{})}
 }
 
-func (h *Hub) Serve(spaceID string, userID int64, snapshot SnapshotFunc, w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, nil)
+func (h *Hub) Serve(spaceID string, userID int64, snapshot SnapshotFunc, originPatterns []string, w http.ResponseWriter, r *http.Request) error {
+	var options *websocket.AcceptOptions
+	if len(originPatterns) > 0 {
+		options = &websocket.AcceptOptions{OriginPatterns: originPatterns}
+	}
+	conn, err := websocket.Accept(w, r, options)
 	if err != nil {
-		return
+		return err
 	}
 	item := &client{userID: userID, conn: conn}
 	h.add(spaceID, item)
@@ -38,11 +42,11 @@ func (h *Hub) Serve(spaceID string, userID int64, snapshot SnapshotFunc, w http.
 		_ = conn.Close(websocket.StatusNormalClosure, "closed")
 	}()
 	if err := item.write(snapshot(userID)); err != nil {
-		return
+		return nil
 	}
 	for {
 		if _, _, err := conn.Read(r.Context()); err != nil {
-			return
+			return nil
 		}
 	}
 }

@@ -44,10 +44,17 @@ type authInput struct {
 	DisplayName string `json:"display_name"`
 }
 
+type credentialsInput struct {
+	Username        string `json:"username"`
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 type authenticatedUser struct {
 	store.User
 	Permissions []access.Permission `json:"permissions"`
 	WeChatBound bool                `json:"wechat_bound"`
+	HasPassword bool                `json:"has_password"`
 }
 
 func (s *Server) presentUser(ctx context.Context, user store.User) (authenticatedUser, error) {
@@ -59,7 +66,7 @@ func (s *Server) presentUser(ctx context.Context, user store.User) (authenticate
 	if err != nil {
 		return authenticatedUser{}, err
 	}
-	return authenticatedUser{User: user, Permissions: permissions, WeChatBound: wechatBound}, nil
+	return authenticatedUser{User: user, Permissions: permissions, WeChatBound: wechatBound, HasPassword: user.HasPassword()}, nil
 }
 
 func validateAccountInput(input *authInput) error {
@@ -302,6 +309,54 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, user store.User) error {
+	presented, err := s.presentUser(r.Context(), user)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": presented})
+	return nil
+}
+
+func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request, user store.User) error {
+	var input credentialsInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.Username = strings.TrimSpace(input.Username)
+	if !usernamePattern.MatchString(input.Username) {
+		return &apiError{Status: http.StatusBadRequest, Message: "用户名需为 3–24 位字母、数字或下划线"}
+	}
+	if user.HasPassword() {
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.CurrentPassword)) != nil {
+			return &apiError{Status: http.StatusUnauthorized, Message: "当前密码错误"}
+		}
+	} else if input.NewPassword == "" {
+		return &apiError{Status: http.StatusBadRequest, Message: "首次设置登录账号时必须同时设置密码"}
+	}
+	if input.NewPassword == "" && input.Username == user.Username {
+		return &apiError{Status: http.StatusBadRequest, Message: "账号或密码没有变化"}
+	}
+
+	passwordHash := user.PasswordHash
+	if input.NewPassword != "" {
+		if len(input.NewPassword) < 8 || len(input.NewPassword) > 72 {
+			return &apiError{Status: http.StatusBadRequest, Message: "新密码长度需为 8–72 位"}
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		passwordHash = string(hash)
+	}
+	if err := s.store.UpdateUserCredentials(r.Context(), user.ID, input.Username, passwordHash); err != nil {
+		if store.IsUniqueViolation(err) {
+			return &apiError{Status: http.StatusConflict, Message: "用户名已存在"}
+		}
+		return err
+	}
+	user.Username = input.Username
+	user.PasswordHash = passwordHash
+	s.issueSession(w, r, user)
 	presented, err := s.presentUser(r.Context(), user)
 	if err != nil {
 		return err

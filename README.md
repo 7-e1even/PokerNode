@@ -4,7 +4,7 @@
 
 ## 已实现
 
-- 独立用户注册、登录、HttpOnly 会话；微信首次登录自动注册，老账号可绑定微信
+- 独立用户注册、登录、HttpOnly 会话；用户可自助修改登录账号和密码，微信首次登录自动注册，老账号可绑定微信
 - `超级管理员 / 运营 / 玩家` 平台角色与接口级权限校验
 - 频道创建、邀请码加入、管理员连接设置；一个频道可创建多张牌桌
 - 频道管理员凭证与玩家个人凭证分离；自动创建普通用户和 System Access Token，凭证使用 AES-256-GCM 加密落库，界面只显示末四位
@@ -25,7 +25,12 @@ PokerNode 里的 `$` 是 New API quota 换算后的显示单位，不是银行�
 
 ## 一键部署：GHCR + Docker Compose
 
-`main` 分支和 `v*` 标签会由 GitHub Actions 自动测试并构建 `linux/amd64`、`linux/arm64` 镜像，发布到 `ghcr.io/7-e1even/pokernode`。服务器不需要源码、Go 或 Node.js，只需要 Docker Compose。
+`main` 分支和 `v*` 标签会由 GitHub Actions 自动测试并构建 `linux/amd64`、`linux/arm64` 双镜像：
+
+- `ghcr.io/7-e1even/pokernode-web`：Nginx 托管 React 静态资源，并反向代理 API 与 WebSocket。
+- `ghcr.io/7-e1even/pokernode-server`：只运行 Go API，通过 Compose 内网访问，不直接暴露宿主机端口。
+
+服务器不需要源码、Go 或 Node.js，只需要 Docker Compose。对外仍只有一个 Web 入口。
 
 1. 复制环境文件：
 
@@ -73,7 +78,9 @@ docker compose pull
 docker compose up -d
 ```
 
-默认监听所有网卡的 `8080` 端口。可在 `.env` 中通过 `POKERNODE_BIND_ADDRESS`、`POKERNODE_PORT` 修改宿主机监听地址和端口；通过 `POKERNODE_IMAGE` 可以固定到发布标签或 `sha-<完整提交哈希>` 镜像。
+默认监听所有网卡的 `8080` 端口。可在 `.env` 中通过 `POKERNODE_BIND_ADDRESS`、`POKERNODE_PORT` 修改宿主机监听地址和端口；通过 `POKERNODE_WEB_IMAGE`、`POKERNODE_SERVER_IMAGE` 可以分别固定到发布标签或 `sha-<完整提交哈希>` 镜像。
+
+通过反向代理或内网穿透使用公网域名时，默认无需增加配置：WebSocket 可用时保持实时推送，不可用时牌桌会自动降级为短轮询同步。若代理改写了 Host 且希望恢复 WebSocket，可选设置 `POKERNODE_TRUSTED_ORIGINS=https://poker.example.com`，多个来源用逗号分隔；代理同时需要转发 `Upgrade` 与 `Connection` 请求头。
 
 如需从当前源码本地构建，使用开发覆盖文件，不会改变默认的 GHCR 部署路径：
 

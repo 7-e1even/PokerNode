@@ -16,11 +16,12 @@ const sectionCopy: Record<AdminSection, { title: string; description: string }> 
   settings: { title: "系统设置", description: "控制平台注册策略" },
 };
 
-export default function AdminDashboard({ user, section, onSectionChanged, onOpenLobby, onLogout, onRegistrationChanged }: {
+export default function AdminDashboard({ user, section, onSectionChanged, onOpenLobby, onUserUpdated, onLogout, onRegistrationChanged }: {
   user: User;
   section: AdminSection;
   onSectionChanged: (section: AdminSection) => void;
   onOpenLobby: () => void;
+  onUserUpdated: (user: User) => void;
   onLogout: () => void;
   onRegistrationChanged: (enabled: boolean) => void;
 }) {
@@ -33,7 +34,7 @@ export default function AdminDashboard({ user, section, onSectionChanged, onOpen
 
   return (
     <SidebarProvider defaultOpen>
-      <AppSidebar user={user} active={section} onNavigate={onSectionChanged} onOpenLobby={onOpenLobby} onLogout={() => void logout()} />
+      <AppSidebar user={user} active={section} onNavigate={onSectionChanged} onOpenLobby={onOpenLobby} onUserUpdated={onUserUpdated} onLogout={() => void logout()} />
       <SidebarInset className="min-h-svh overflow-hidden">
         <SiteHeader title={copy.title} description={copy.description} />
         <AdminConsole currentUser={user} section={section} onRegistrationChanged={onRegistrationChanged} />

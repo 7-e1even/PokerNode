@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,6 +45,9 @@ func main() {
 	defer database.Close()
 
 	var serverOptions []app.ServerOption
+	if origins := os.Getenv("POKERNODE_TRUSTED_ORIGINS"); origins != "" {
+		serverOptions = append(serverOptions, app.WithWebSocketOrigins(strings.Split(origins, ",")...))
+	}
 	wechatAppID := os.Getenv("WECHAT_APP_ID")
 	wechatAppSecret := os.Getenv("WECHAT_APP_SECRET")
 	wechatRedirectURI := os.Getenv("WECHAT_REDIRECT_URI")

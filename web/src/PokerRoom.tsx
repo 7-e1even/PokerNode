@@ -56,7 +56,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   const [membership, setMembership] = useState<Membership | null>(null);
   const [table, setTable] = useState<TableState | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
-  const [connection, setConnection] = useState<"connecting" | "live" | "offline">("connecting");
+  const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "offline">("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -92,18 +92,94 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/spaces/${space.id}/tables/${initialTable.id}/ws`);
-    setConnection("connecting");
-    socket.onopen = () => setConnection("live");
-    socket.onmessage = (event) => {
+    const socketURL = `${protocol}//${window.location.host}/api/spaces/${space.id}/tables/${initialTable.id}/ws`;
+    const tableURL = `/api/spaces/${space.id}/tables/${initialTable.id}`;
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let pollTimer: number | undefined;
+    let reconnectAttempts = 0;
+    let pollInFlight = false;
+
+    async function refreshTable() {
+      if (disposed || pollInFlight) return;
+      pollInFlight = true;
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === "table") setTable(message.table);
-      } catch { /* ignore malformed server messages */ }
+        const result = await api<{ table: TableState }>(tableURL);
+        if (!disposed) {
+          setTable(result.table);
+          if (socket?.readyState !== WebSocket.OPEN) setConnection("polling");
+        }
+      } catch {
+        if (!disposed && socket?.readyState !== WebSocket.OPEN) setConnection("offline");
+      } finally {
+        pollInFlight = false;
+      }
+    }
+
+    function stopPolling() {
+      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+
+    function startPolling() {
+      if (disposed || pollTimer !== undefined) return;
+      void refreshTable();
+      pollTimer = window.setInterval(() => void refreshTable(), 2_000);
+    }
+
+    function scheduleReconnect() {
+      if (disposed) return;
+      startPolling();
+      const delay = Math.min(1_000 * 2 ** reconnectAttempts, 15_000);
+      reconnectAttempts += 1;
+      reconnectTimer = window.setTimeout(connect, delay);
+    }
+
+    function connect() {
+      if (disposed || socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN) return;
+      setConnection(reconnectAttempts === 0 ? "connecting" : "polling");
+      const nextSocket = new WebSocket(socketURL);
+      socket = nextSocket;
+      nextSocket.onopen = () => {
+        if (disposed || socket !== nextSocket) return;
+        reconnectAttempts = 0;
+        stopPolling();
+        setConnection("live");
+        void refreshTable();
+      };
+      nextSocket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "table") setTable(message.table);
+        } catch { /* ignore malformed server messages */ }
+      };
+      nextSocket.onclose = () => {
+        if (socket !== nextSocket) return;
+        socket = null;
+        scheduleReconnect();
+      };
+      nextSocket.onerror = () => nextSocket.close();
+    }
+
+    function reconnectNow() {
+      if (disposed) return;
+      reconnectAttempts = 0;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      if (socket) socket.close();
+      else connect();
+    }
+
+    connect();
+    window.addEventListener("online", reconnectNow);
+    return () => {
+      disposed = true;
+      window.removeEventListener("online", reconnectNow);
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      stopPolling();
+      socket?.close();
     };
-    socket.onclose = () => setConnection("offline");
-    socket.onerror = () => setConnection("offline");
-    return () => socket.close();
   }, [initialTable.id, space.id]);
 
   return (
@@ -122,7 +198,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
             <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
-            {connection === "live" ? "实时" : connection === "connecting" ? "连接中" : "已断开"}
+            {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
           </Badge>
           {space.is_bound && (
             <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>

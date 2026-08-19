@@ -26,6 +26,8 @@ var (
 	ErrExternalIdentitySet     = errors.New("user already has an external identity for this provider")
 )
 
+const externalLoginPasswordHash = "!external-login"
+
 type Store struct {
 	db *sql.DB
 }
@@ -42,6 +44,10 @@ type User struct {
 	RankingHidden   bool     `json:"ranking_hidden"`
 	ManagedSpaceIDs []string `json:"managed_space_ids,omitempty"`
 	JoinedSpaceIDs  []string `json:"joined_space_ids,omitempty"`
+}
+
+func (u User) HasPassword() bool {
+	return u.PasswordHash != externalLoginPasswordHash
 }
 
 type Space struct {
@@ -404,7 +410,7 @@ func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displ
 	if characters := []rune(displayName); len(characters) > 32 {
 		displayName = string(characters[:32])
 	}
-	user, err := createUser(ctx, tx, username, displayName, "!external-login", role)
+	user, err := createUser(ctx, tx, username, displayName, externalLoginPasswordHash, role)
 	if err != nil {
 		return User{}, err
 	}
@@ -565,6 +571,21 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, username, displayN
 		return ErrNotFound
 	}
 	return tx.Commit()
+}
+
+func (s *Store) UpdateUserCredentials(ctx context.Context, userID int64, username, passwordHash string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET username=$1,password_hash=$2 WHERE id=$3`, username, passwordHash, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) SetUserRankingHidden(ctx context.Context, userID int64, hidden bool) error {

@@ -14,11 +14,10 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-push:
+  verify:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     services:
       postgres:
@@ -49,9 +48,30 @@ jobs:
           POKERNODE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/pokernode_test?sslmode=disable
         run: go test ./...
 
+  build-and-push:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            dockerfile: Dockerfile
+            suffix: -server
+          - component: web
+            dockerfile: web/Dockerfile
+            suffix: -web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
       - name: Prepare image name
         shell: bash
-        run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+        run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}${{ matrix.suffix }}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -81,11 +101,12 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=pokernode
-          cache-to: type=gha,mode=max,scope=pokernode
+          cache-from: type=gha,scope=pokernode-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=pokernode-${{ matrix.component }}
           provenance: mode=max
           sbom: true

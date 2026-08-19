@@ -39,6 +39,89 @@ type autoProvisionedUser struct {
 	DisplayName string
 }
 
+func TestUpdateOwnCredentials(t *testing.T) {
+	database := openTestDatabase(t)
+	cipher, err := secure.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := auth.NewSessions("test-session-secret-that-is-long-enough", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	appServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer appServer.Close()
+
+	alice := newTestClient(t)
+	var registered struct {
+		User authenticatedUser `json:"user"`
+	}
+	requestJSON(t, alice, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
+		"username": "alice", "display_name": "Alice", "password": "password-1",
+	}, http.StatusCreated, &registered)
+	if !registered.User.HasPassword {
+		t.Fatal("password registration should report an available password")
+	}
+	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
+		"username": "bob", "display_name": "Bob", "password": "password-2",
+	}, http.StatusCreated, nil)
+
+	credentialsURL := appServer.URL + "/api/me/credentials"
+	requestJSON(t, alice, http.MethodPatch, credentialsURL, map[string]any{
+		"username": "alice_new", "current_password": "wrong-password", "new_password": "new-password-1",
+	}, http.StatusUnauthorized, nil)
+	requestJSON(t, alice, http.MethodPatch, credentialsURL, map[string]any{
+		"username": "bob", "current_password": "password-1", "new_password": "",
+	}, http.StatusConflict, nil)
+	var updated struct {
+		User authenticatedUser `json:"user"`
+	}
+	requestJSON(t, alice, http.MethodPatch, credentialsURL, map[string]any{
+		"username": "alice_new", "current_password": "password-1", "new_password": "new-password-1",
+	}, http.StatusOK, &updated)
+	if updated.User.Username != "alice_new" || !updated.User.HasPassword {
+		t.Fatalf("unexpected updated account: %#v", updated.User)
+	}
+	requestJSON(t, alice, http.MethodGet, appServer.URL+"/api/me", nil, http.StatusOK, &updated)
+	if updated.User.Username != "alice_new" {
+		t.Fatalf("updated session did not return the new username: %#v", updated.User)
+	}
+	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{
+		"username": "alice", "password": "password-1",
+	}, http.StatusUnauthorized, nil)
+	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{
+		"username": "alice_new", "password": "new-password-1",
+	}, http.StatusOK, nil)
+
+	external, err := database.CreateExternalUser(context.Background(), "wechat", "credential-test-subject", "微信用户")
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalClient := newTestClient(t)
+	sessionValue, _, err := sessions.Issue(external.ID, external.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverURL, err := url.Parse(appServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalClient.Jar.SetCookies(serverURL, []*http.Cookie{{Name: auth.CookieName, Value: sessionValue, Path: "/"}})
+	requestJSON(t, externalClient, http.MethodPatch, credentialsURL, map[string]any{
+		"username": "wechat_user", "current_password": "", "new_password": "",
+	}, http.StatusBadRequest, nil)
+	requestJSON(t, externalClient, http.MethodPatch, credentialsURL, map[string]any{
+		"username": "wechat_user", "current_password": "", "new_password": "wechat-password",
+	}, http.StatusOK, &updated)
+	if updated.User.Username != "wechat_user" || !updated.User.HasPassword {
+		t.Fatalf("external account credentials were not established: %#v", updated.User)
+	}
+	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{
+		"username": "wechat_user", "password": "wechat-password",
+	}, http.StatusOK, nil)
+}
+
 func TestFullSpaceAndTableFlow(t *testing.T) {
 	upstream := &fakeNewAPI{
 		users: map[string]map[string]any{

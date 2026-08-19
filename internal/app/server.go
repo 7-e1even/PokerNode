@@ -21,13 +21,14 @@ import (
 )
 
 type Server struct {
-	store    *store.Store
-	cipher   *secure.Cipher
-	sessions *auth.Sessions
-	newAPI   *newapi.Client
-	wechat   *wechatAuth
-	hub      *realtime.Hub
-	logger   *slog.Logger
+	store                   *store.Store
+	cipher                  *secure.Cipher
+	sessions                *auth.Sessions
+	newAPI                  *newapi.Client
+	wechat                  *wechatAuth
+	hub                     *realtime.Hub
+	logger                  *slog.Logger
+	websocketOriginPatterns []string
 
 	tablesMu  sync.Mutex
 	tables    map[string]*tableRuntime
@@ -55,6 +56,16 @@ func WithWeChat(redirectURL string, provider wechatProvider) ServerOption {
 	}
 }
 
+func WithWebSocketOrigins(patterns ...string) ServerOption {
+	return func(server *Server) {
+		for _, pattern := range patterns {
+			if pattern = strings.TrimSpace(pattern); pattern != "" {
+				server.websocketOriginPatterns = append(server.websocketOriginPatterns, pattern)
+			}
+		}
+	}
+}
+
 func NewServer(database *store.Store, cipher *secure.Cipher, sessions *auth.Sessions, logger *slog.Logger, options ...ServerOption) *Server {
 	server := &Server{
 		store: database, cipher: cipher, sessions: sessions, newAPI: newapi.NewClient(),
@@ -79,6 +90,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/admin/auth/login", s.handleAdminLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.withUser(s.handleMe))
+	mux.HandleFunc("PATCH /api/me/credentials", s.withUser(s.handleUpdateCredentials))
 	mux.HandleFunc("GET /api/account-bindings", s.withUser(s.handleListAccountBindings))
 	mux.HandleFunc("GET /api/spaces", s.withUser(s.handleListSpaces))
 	mux.HandleFunc("POST /api/spaces", s.withUser(s.handleCreateSpace))

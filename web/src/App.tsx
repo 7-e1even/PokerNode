@@ -101,6 +101,7 @@ export default function App() {
           section={route.page === "admin" ? route.section : "overview"}
           onSectionChanged={(section) => navigate(adminPath(section))}
           onOpenLobby={() => navigate("/")}
+          onUserUpdated={setUser}
           onRegistrationChanged={setRegistrationEnabled}
           onLogout={() => { setUser(null); navigate("/admin/login", true); }}
         />
@@ -152,6 +153,7 @@ export default function App() {
         navigate(`/channels/${space.id}`);
       }}
       onOpenAdmin={hasPermission(user, "admin:view") ? () => navigate("/admin") : undefined}
+      onUserUpdated={setUser}
       onLogout={() => {
         setSelectedSpace(null);
         setUser(null);

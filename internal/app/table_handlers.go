@@ -369,9 +369,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user st
 	if err != nil {
 		return err
 	}
-	s.hub.Serve(tableRoomKey(space.ID, tableID), user.ID, func(viewerID int64) any {
+	if err := s.hub.Serve(tableRoomKey(space.ID, tableID), user.ID, func(viewerID int64) any {
 		return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID)}
-	}, w, r)
+	}, s.websocketOriginPatterns, w, r); err != nil {
+		s.logger.Warn("accept realtime connection", "origin", r.Header.Get("Origin"), "host", r.Host, "error", err)
+	}
 	return nil
 }
 

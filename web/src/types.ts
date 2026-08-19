@@ -10,6 +10,7 @@ export interface User {
   status: UserStatus;
   created_at: string;
   wechat_bound?: boolean;
+  has_password?: boolean;
   ranking_hidden?: boolean;
   permissions?: string[];
   managed_space_ids?: string[];

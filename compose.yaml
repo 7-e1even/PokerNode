@@ -1,16 +1,17 @@
 services:
-  pokernode:
-    image: ${POKERNODE_IMAGE:-ghcr.io/7-e1even/pokernode:latest}
+  server:
+    image: ${POKERNODE_SERVER_IMAGE:-ghcr.io/7-e1even/pokernode-server:latest}
     pull_policy: always
     restart: unless-stopped
     init: true
-    ports:
-      - "${POKERNODE_BIND_ADDRESS:-0.0.0.0}:${POKERNODE_PORT:-8080}:8080"
+    expose:
+      - "8080"
     environment:
       POKERNODE_ADDR: :8080
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       POKERNODE_SESSION_SECRET: ${POKERNODE_SESSION_SECRET:?set POKERNODE_SESSION_SECRET in .env}
       POKERNODE_ENCRYPTION_KEY: ${POKERNODE_ENCRYPTION_KEY:?set POKERNODE_ENCRYPTION_KEY in .env}
+      POKERNODE_TRUSTED_ORIGINS: ${POKERNODE_TRUSTED_ORIGINS:-}
       WECHAT_APP_ID: ${WECHAT_APP_ID:-}
       WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
       WECHAT_REDIRECT_URI: ${WECHAT_REDIRECT_URI:-}
@@ -28,3 +29,28 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  web:
+    image: ${POKERNODE_WEB_IMAGE:-ghcr.io/7-e1even/pokernode-web:latest}
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${POKERNODE_BIND_ADDRESS:-0.0.0.0}:${POKERNODE_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
