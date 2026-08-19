@@ -100,7 +100,7 @@ export default function App() {
           user={user}
           section={route.page === "admin" ? route.section : "overview"}
           onSectionChanged={(section) => navigate(adminPath(section))}
-          onOpenLobby={() => navigate("/")}
+          onOpenLobby={() => navigate("/channels")}
           onUserUpdated={setUser}
           onRegistrationChanged={setRegistrationEnabled}
           onLogout={() => { setUser(null); navigate("/admin/login", true); }}
@@ -112,14 +112,14 @@ export default function App() {
   if (!user) return <AuthScreen registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} onAuthenticated={setUser} />;
 
   if (route.page === "account_bindings") {
-    return <AccountBindings onBack={() => navigate("/")} onOpenSpace={(spaceID) => navigate(`/channels/${spaceID}`)} />;
+    return <AccountBindings onBack={() => navigate("/channels")} onOpenSpace={(spaceID) => navigate(`/channels/${spaceID}`)} />;
   }
 
   if (route.page === "channel" || route.page === "channel_balances") {
     if (routeError) {
       return (
         <main className="grid min-h-svh place-items-center bg-muted/30 p-6">
-          <Alert variant="destructive" className="max-w-md"><AlertTitle>无法打开频道</AlertTitle><AlertDescription>{routeError}</AlertDescription><Button className="mt-4" variant="outline" onClick={() => navigate("/")}>返回大厅</Button></Alert>
+          <Alert variant="destructive" className="max-w-md"><AlertTitle>无法打开频道</AlertTitle><AlertDescription>{routeError}</AlertDescription><Button className="mt-4" variant="outline" onClick={() => navigate("/channels")}>返回大厅</Button></Alert>
         </main>
       );
     }
@@ -135,7 +135,7 @@ export default function App() {
         user={user}
         initialSpace={selectedSpace}
         initialTableID={route.tableID}
-        onBack={() => navigate("/")}
+        onBack={() => navigate("/channels")}
         onNavigateTable={(tableID) => navigate(tableID ? `/channels/${selectedSpace.id}/tables/${tableID}` : `/channels/${selectedSpace.id}`)}
         onOpenBindings={() => navigate("/account/bindings")}
         onOpenBalances={() => navigate(`/channels/${selectedSpace.id}/balances`)}
@@ -146,7 +146,9 @@ export default function App() {
   return (
     <Dashboard
       user={user}
+      view={route.page === "channel_list" ? "channels" : "ranking"}
       wechatLoginEnabled={wechatLoginEnabled}
+      onViewChange={(view) => navigate(view === "ranking" ? "/" : "/channels")}
       onOpenBindings={() => navigate("/account/bindings")}
       onOpenSpace={(space) => {
         setSelectedSpace(space);
@@ -164,7 +166,8 @@ export default function App() {
 }
 
 type AppRoute =
-  | { page: "lobby" }
+  | { page: "ranking" }
+  | { page: "channel_list" }
   | { page: "account_bindings" }
   | { page: "admin_login" }
   | { page: "admin"; section: AdminSection }
@@ -174,7 +177,8 @@ type AppRoute =
 
 function parseRoute(pathname: string): AppRoute {
   const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
-  if (parts.length === 0) return { page: "lobby" };
+  if (parts.length === 0) return { page: "ranking" };
+  if (parts.length === 1 && parts[0] === "channels") return { page: "channel_list" };
   if (parts.length === 2 && parts[0] === "account" && parts[1] === "bindings") return { page: "account_bindings" };
   if (parts[0] === "admin") {
     if (parts.length === 1) return { page: "admin", section: "overview" };

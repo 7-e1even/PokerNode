@@ -62,6 +62,15 @@ func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request, user s
 	return nil
 }
 
+func (s *Server) handleLobbyLeaderboard(w http.ResponseWriter, r *http.Request, user store.User) error {
+	entries, err := s.store.LobbyLeaderboard(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"leaderboard": entries})
+	return nil
+}
+
 func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request, user store.User) error {
 	var input spaceInput
 	if err := decodeJSON(r, &input); err != nil {

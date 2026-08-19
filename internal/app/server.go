@@ -97,6 +97,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/me", s.withUser(s.handleMe))
 	mux.HandleFunc("PATCH /api/me/credentials", s.withUser(s.handleUpdateCredentials))
 	mux.HandleFunc("GET /api/account-bindings", s.withUser(s.handleListAccountBindings))
+	mux.HandleFunc("GET /api/leaderboard", s.withUser(s.handleLobbyLeaderboard))
 	mux.HandleFunc("GET /api/spaces", s.withUser(s.handleListSpaces))
 	mux.HandleFunc("POST /api/spaces", s.withUser(s.handleCreateSpace))
 	mux.HandleFunc("POST /api/spaces/join", s.withUser(s.handleJoinSpace))

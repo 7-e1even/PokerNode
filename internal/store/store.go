@@ -899,6 +899,36 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
 	return entries, rows.Err()
 }
 
+func (s *Store) LobbyLeaderboard(ctx context.Context, userID int64) ([]ChannelLeaderboardEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,
+COALESCE(SUM(CASE
+  WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  ELSE 0
+END),0)::BIGINT AS net_cents,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions
+FROM space_members viewer
+JOIN space_members m ON m.space_id=viewer.space_id
+JOIN users u ON u.id=m.user_id
+LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+WHERE viewer.user_id=$1 AND u.ranking_hidden=FALSE
+GROUP BY u.id,u.display_name
+ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]ChannelLeaderboardEntry, 0)
+	for rows.Next() {
+		var entry ChannelLeaderboardEntry
+		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.NetCents, &entry.Sessions); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
 func (s *Store) SaveTableState(ctx context.Context, spaceID, tableID string, data []byte) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO table_states(space_id,table_id,state_json,updated_at) VALUES($1,$2,$3,$4)
 ON CONFLICT(space_id,table_id) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at`, spaceID, tableID, data, time.Now().UTC().Format(time.RFC3339Nano))

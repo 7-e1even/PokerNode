@@ -145,6 +145,21 @@
     background: var(--background);
   }
 
+  .lobby-leaderboard {
+    background:
+      radial-gradient(circle at 88% 0%, color-mix(in oklch, var(--primary) 9%, transparent), transparent 34%),
+      var(--card);
+  }
+
+  .leaderboard-podium-card {
+    background: color-mix(in oklch, var(--card) 94%, var(--muted));
+  }
+
+  .leaderboard-podium-card--first {
+    background: color-mix(in oklch, var(--card) 90%, var(--primary));
+    box-shadow: 0 18px 44px -34px color-mix(in oklch, var(--primary) 62%, transparent);
+  }
+
   .lobby-channel-card {
     box-shadow: 0 10px 30px -28px oklch(0.2 0.01 250 / 30%);
     transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
@@ -257,7 +272,7 @@
   }
 
   .poker-table-layout {
-    top: 41.5%;
+    top: 50%;
     width: min(70vw, 52rem);
     aspect-ratio: 880 / 493;
     container-type: size;
@@ -651,14 +666,12 @@
     }
 
     .poker-table-layout {
-      top: 45%;
       width: calc(100% - 1rem);
       height: min(22rem, calc(100% - 9.5rem));
       aspect-ratio: auto;
     }
 
     .poker-scene[data-actionable="true"] .poker-table-layout {
-      top: 39%;
       height: min(22rem, calc(100% - 14rem));
     }
 
@@ -700,12 +713,10 @@
 
   @media (min-width: 48.001rem) and (max-height: 45rem) {
     .poker-table-layout {
-      top: 50%;
       width: min(68vw, 46rem, calc((100svh - 18rem) * 1.785));
     }
 
     .poker-scene[data-actionable="true"] .poker-table-layout {
-      top: 42%;
       width: min(64vw, 42rem, calc((100svh - 22rem) * 1.785));
     }
 
@@ -740,12 +751,10 @@
 
   @media (max-width: 40rem) and (max-height: 40rem) and (orientation: portrait) {
     .poker-table-layout {
-      top: 45%;
       height: min(22rem, calc(100% - 14rem));
     }
 
     .poker-scene[data-actionable="true"] .poker-table-layout {
-      top: 32%;
       height: min(22rem, calc(100% - 22.5rem));
     }
 
@@ -767,7 +776,6 @@
   @media (max-width: 48rem) and (max-height: 28rem) and (orientation: landscape) {
     .poker-scene .poker-table-layout,
     .poker-scene[data-actionable="true"] .poker-table-layout {
-      top: 52%;
       left: 29%;
       width: 55%;
       height: min(12rem, calc(100% - 5rem));

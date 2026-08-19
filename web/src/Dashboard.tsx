@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, CheckCircle2, Copy, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
-  Menu, Plus, RadioTower, ShieldCheck,
+  ArrowRight, CheckCircle2, Copy, Crown, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
+  Menu, Plus, RadioTower, ShieldCheck, Trophy, UsersRound,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -19,17 +19,20 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BrandMark } from "@/components/brand-mark";
 import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
 import { WeChatIcon } from "@/components/wechat-icon";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { api, post } from "./api";
-import type { Space, User } from "./types";
+import type { ChannelLeaderboardEntry, Space, User } from "./types";
 
 interface Props {
   user: User;
+  view: "ranking" | "channels";
   wechatLoginEnabled: boolean;
+  onViewChange: (view: "ranking" | "channels") => void;
   onOpenSpace: (space: Space) => void;
   onOpenBindings: () => void;
   onOpenAdmin?: () => void;
@@ -37,19 +40,29 @@ interface Props {
   onLogout: () => void;
 }
 
-export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpenBindings, onOpenAdmin, onUserUpdated, onLogout }: Props) {
+export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange, onOpenSpace, onOpenBindings, onOpenAdmin, onUserUpdated, onLogout }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([]);
+  const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [error, setError] = useState("");
+  const [leaderboardError, setLeaderboardError] = useState("");
 
   useEffect(() => {
     api<{ spaces: Space[] }>("/api/spaces")
       .then((result) => setSpaces(result.spaces || []))
       .catch((caught) => setError(caught instanceof Error ? caught.message : "读取频道失败"))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    api<{ leaderboard: ChannelLeaderboardEntry[] }>("/api/leaderboard")
+      .then((result) => setLeaderboard(result.leaderboard || []))
+      .catch((caught) => setLeaderboardError(caught instanceof Error ? caught.message : "读取大厅排名失败"))
+      .finally(() => setLeaderboardLoading(false));
   }, []);
 
   useEffect(() => {
@@ -88,6 +101,8 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
     <div className="game-canvas flex min-h-svh flex-col">
       <GameHeader
         user={user}
+        view={view}
+        onViewChange={onViewChange}
         onOpenMenu={() => setMobileOpen(true)}
         onOpenBindings={onOpenBindings}
         onOpenAccount={() => setAccountOpen(true)}
@@ -100,7 +115,11 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
 
       <div className="flex min-h-0 flex-1">
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <LobbyView user={user} spaces={spaces} loading={loading} error={error} onCreate={() => setDialog("create")} onJoin={() => setDialog("join")} onOpenSpace={openSpace} />
+          {view === "ranking" ? (
+            <RankingView user={user} leaderboard={leaderboard} loading={leaderboardLoading} error={leaderboardError} />
+          ) : (
+            <ChannelPickerView spaces={spaces} loading={loading} error={error} onCreate={() => setDialog("create")} onJoin={() => setDialog("join")} onOpenSpace={openSpace} />
+          )}
         </main>
       </div>
 
@@ -109,7 +128,9 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
           <SheetHeader className="border-b"><SheetTitle>游戏大厅</SheetTitle><SheetDescription>选择功能或频道</SheetDescription></SheetHeader>
           <LobbySidebar
             className="flex min-h-0 flex-1 border-0"
+            view={view}
             spaces={spaces}
+            onViewChange={(nextView) => { setMobileOpen(false); onViewChange(nextView); }}
             onOpenSpace={openSpace}
             onCreate={() => { setMobileOpen(false); setDialog("create"); }}
             onJoin={() => { setMobileOpen(false); setDialog("join"); }}
@@ -132,8 +153,10 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
   );
 }
 
-function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdmin, wechatLoginEnabled, onLogout }: {
+function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdmin, wechatLoginEnabled, onLogout }: {
   user: User;
+  view: "ranking" | "channels";
+  onViewChange: (view: "ranking" | "channels") => void;
   onOpenMenu: () => void;
   onOpenBindings: () => void;
   onOpenAccount: () => void;
@@ -149,6 +172,10 @@ function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdm
           <BrandMark className="size-10" aria-hidden="true" />
           <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">PokerNode</strong><small className="block truncate">Texas Hold’em Hall</small></span>
         </div>
+        <nav className="hidden items-center gap-1 md:flex" aria-label="主导航">
+          <Button variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
+          <Button variant={view === "channels" ? "secondary" : "ghost"} onClick={() => onViewChange("channels")}><Gamepad2 data-icon="inline-start" />进入平台</Button>
+        </nav>
       </div>
 
       <DropdownMenu>
@@ -161,9 +188,11 @@ function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAccount, onOpenAdm
   );
 }
 
-function LobbySidebar({ className, spaces, onOpenSpace, onCreate, onJoin }: {
+function LobbySidebar({ className, view, spaces, onViewChange, onOpenSpace, onCreate, onJoin }: {
   className?: string;
+  view: "ranking" | "channels";
   spaces: Space[];
+  onViewChange: (view: "ranking" | "channels") => void;
   onOpenSpace: (space: Space) => void;
   onCreate: () => void;
   onJoin: () => void;
@@ -176,7 +205,8 @@ function LobbySidebar({ className, spaces, onOpenSpace, onCreate, onJoin }: {
       </div>
       <Separator />
       <div className="flex flex-col gap-1 p-3">
-        <Button className="justify-start" variant="secondary"><Gamepad2 data-icon="inline-start" />游戏大厅</Button>
+        <Button className="justify-start" variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
+        <Button className="justify-start" variant={view === "channels" ? "secondary" : "ghost"} onClick={() => onViewChange("channels")}><Gamepad2 data-icon="inline-start" />进入平台</Button>
       </div>
       <Separator />
       <ScrollArea className="min-h-0 flex-1">
@@ -204,8 +234,33 @@ function LobbySidebarGroup({ label, spaces, empty, onOpenSpace }: {
   );
 }
 
-function LobbyView({ user, spaces, loading, error, onCreate, onJoin, onOpenSpace }: {
+function RankingView({ user, leaderboard, loading, error }: {
   user: User;
+  leaderboard: ChannelLeaderboardEntry[];
+  loading: boolean;
+  error: string;
+}) {
+  return (
+    <div className="player-lobby flex flex-1 overflow-auto">
+      <div className="mx-auto flex w-full max-w-7xl flex-col px-4 py-7 sm:px-6 sm:py-10 lg:px-8">
+        <section className="flex flex-col gap-5" aria-labelledby="ranking-title">
+          <header className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
+            <div className="flex max-w-3xl flex-col gap-3">
+              <Badge variant="outline" className="w-fit"><Trophy data-icon="inline-start" />PokerNode Leaderboard</Badge>
+              <h1 id="ranking-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">牌桌实力榜</h1>
+              <p className="text-sm leading-6 text-muted-foreground">汇总你已加入频道的已结算战绩。排名只使用真实净胜和场次，不额外虚构评分。</p>
+            </div>
+            <Badge variant="secondary" className="w-fit"><UsersRound data-icon="inline-start" />{leaderboard.length} 位玩家</Badge>
+          </header>
+
+          <LobbyLeaderboard entries={leaderboard} currentUserID={user.id} loading={loading} error={error} />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ChannelPickerView({ spaces, loading, error, onCreate, onJoin, onOpenSpace }: {
   spaces: Space[];
   loading: boolean;
   error: string;
@@ -215,31 +270,29 @@ function LobbyView({ user, spaces, loading, error, onCreate, onJoin, onOpenSpace
 }) {
   return (
     <div className="player-lobby flex flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-        <header className="flex flex-col justify-between gap-5 border-b pb-6 sm:flex-row sm:items-end" aria-labelledby="lobby-title">
-          <div className="flex max-w-2xl flex-col gap-3">
-            <Badge variant="outline" className="w-fit"><RadioTower data-icon="inline-start" />频道大厅</Badge>
-            <h1 id="lobby-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">选择频道，开始牌局</h1>
-            <p className="text-sm leading-6 text-muted-foreground">{user.display_name}，进入一个频道即可查看牌桌和当前排名。</p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
-            <Button onClick={onCreate}><Plus data-icon="inline-start" />创建频道</Button>
-          </div>
-        </header>
+      <div className="mx-auto flex w-full max-w-7xl flex-col px-4 py-7 sm:px-6 sm:py-10 lg:px-8">
+        <section className="flex flex-col gap-5" aria-labelledby="platform-title">
+          <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+            <div className="flex max-w-2xl flex-col gap-3">
+              <Badge variant="outline" className="w-fit"><Gamepad2 data-icon="inline-start" />PokerNode Platform</Badge>
+              <div className="flex items-center gap-2">
+                <h1 id="platform-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">选择频道</h1>
+                <Badge variant="secondary">{spaces.length}</Badge>
+              </div>
+              <p className="text-sm leading-6 text-muted-foreground">进入频道后选择牌桌，查看在线牌友和频道内的实时排名。</p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
+              <Button onClick={onCreate}><Plus data-icon="inline-start" />创建频道</Button>
+            </div>
+          </header>
 
-        {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-
-        <section className="flex flex-col gap-4" aria-labelledby="your-games-title">
-          <div className="flex items-center gap-2">
-            <h2 id="your-games-title" className="font-heading text-xl font-semibold">我的频道</h2>
-            <Badge variant="secondary">{spaces.length}</Badge>
-          </div>
+          {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
           {loading ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <SpaceSkeleton key={index} />)}</div>
           ) : spaces.length === 0 ? (
-            <Empty className="min-h-80 border bg-card">
+            <Empty className="min-h-72 border bg-card">
               <EmptyHeader><EmptyMedia variant="icon"><RadioTower /></EmptyMedia><EmptyTitle>还没有频道</EmptyTitle><EmptyDescription>创建自己的频道，或者使用朋友发来的邀请码加入。</EmptyDescription></EmptyHeader>
             </Empty>
           ) : (
@@ -247,6 +300,81 @@ function LobbyView({ user, spaces, loading, error, onCreate, onJoin, onOpenSpace
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+function LobbyLeaderboard({ entries, currentUserID, loading, error }: {
+  entries: ChannelLeaderboardEntry[];
+  currentUserID: number;
+  loading: boolean;
+  error: string;
+}) {
+  const ranked = [...entries].sort((left, right) => right.net_cents - left.net_cents || right.sessions - left.sessions || left.display_name.localeCompare(right.display_name));
+  const currentRank = ranked.findIndex((entry) => entry.user_id === currentUserID);
+
+  return (
+    <Card className="lobby-leaderboard overflow-hidden [--card-spacing:--spacing(5)] sm:[--card-spacing:--spacing(6)]">
+      <CardHeader className="border-b">
+        <CardTitle className="text-xl">综合排名</CardTitle>
+        <CardDescription>按已结算净胜排序，场次用于同分排序</CardDescription>
+        <CardAction><Badge variant={currentRank >= 0 ? "secondary" : "outline"}>{currentRank >= 0 ? `我的名次 #${currentRank + 1}` : "等待首场战绩"}</Badge></CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        {error ? (
+          <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
+        ) : loading ? (
+          <LeaderboardSkeleton />
+        ) : ranked.length === 0 ? (
+          <Empty className="border-0 py-12"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>排行榜正在等待第一场牌局</EmptyTitle><EmptyDescription>完成买入和离桌结算后，真实战绩会显示在这里。</EmptyDescription></EmptyHeader></Empty>
+        ) : (
+          <>
+            <div className="grid gap-3 md:grid-cols-3">
+              {ranked.slice(0, 3).map((entry, index) => (
+                <Card size="sm" className={cn("leaderboard-podium-card", index === 0 && "leaderboard-podium-card--first")} key={entry.user_id}>
+                  <CardHeader>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar className="size-11"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
+                      <div className="min-w-0"><CardTitle className="truncate">{entry.display_name}</CardTitle><CardDescription>第 {index + 1} 名</CardDescription></div>
+                    </div>
+                    <CardAction><Badge variant={index === 0 ? "default" : "secondary"}>{index === 0 ? <Crown /> : `#${index + 1}`}</Badge></CardAction>
+                  </CardHeader>
+                  <CardContent><strong className="font-heading text-2xl tabular-nums">{netMoney(entry.net_cents)}</strong></CardContent>
+                  <CardFooter className="justify-between text-xs text-muted-foreground"><span>已结算净胜</span><span>{entry.sessions} 场</span></CardFooter>
+                </Card>
+              ))}
+            </div>
+
+            <div className="overflow-hidden rounded-xl border">
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead className="w-16 text-center">排名</TableHead><TableHead>玩家</TableHead><TableHead className="hidden text-right sm:table-cell">场次</TableHead><TableHead className="text-right">净胜</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  {ranked.map((entry, index) => (
+                    <TableRow className={cn(entry.user_id === currentUserID && "bg-muted/50")} key={entry.user_id}>
+                      <TableCell className="text-center"><Badge className="size-7 justify-center rounded-full p-0" variant={index === 0 ? "default" : index < 3 ? "secondary" : "outline"}>{index + 1}</Badge></TableCell>
+                      <TableCell><div className="flex min-w-0 items-center gap-3"><Avatar className="size-9"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar><div className="min-w-0"><strong className="block truncate">{entry.display_name}</strong>{entry.user_id === currentUserID && <span className="text-xs text-muted-foreground">这是你</span>}</div></div></TableCell>
+                      <TableCell className="hidden text-right tabular-nums text-muted-foreground sm:table-cell">{entry.sessions}</TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{netMoney(entry.net_cents)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </CardContent>
+      <CardFooter className="border-t text-xs leading-5 text-muted-foreground">统计范围仅包含你已加入的频道；正在牌桌上的筹码会在离桌结算后进入大厅排名。</CardFooter>
+    </Card>
+  );
+}
+
+function LeaderboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-5" aria-hidden="true">
+      <div className="grid gap-3 md:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <Card size="sm" key={index}><CardHeader><Skeleton className="size-11 rounded-full" /><Skeleton className="h-4 w-24" /></CardHeader><CardContent><Skeleton className="h-8 w-28" /></CardContent><CardFooter><Skeleton className="h-3 w-full" /></CardFooter></Card>)}</div>
+      <div className="flex flex-col gap-2">{Array.from({ length: 4 }, (_, index) => <Skeleton className="h-14 w-full" key={index} />)}</div>
     </div>
   );
 }
@@ -331,4 +459,9 @@ function initials(name: string) {
 
 function roleLabel(role: User["role"]) {
   return ({ super_admin: "超级管理员", operator: "运营", player: "玩家" } as const)[role];
+}
+
+function netMoney(cents: number) {
+  const sign = cents > 0 ? "+" : cents < 0 ? "−" : "";
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`;
 }

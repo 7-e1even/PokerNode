@@ -379,11 +379,19 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	if leaderboard.Entries[1].DisplayName != "Alice" || leaderboard.Entries[1].NetCents != -50 || leaderboard.Entries[1].Sessions != 1 {
 		t.Fatalf("unexpected second leaderboard entry: %#v", leaderboard.Entries[1])
 	}
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[1].DisplayName != "Alice" {
+		t.Fatalf("unexpected lobby leaderboard: %#v", leaderboard.Entries)
+	}
 	requestJSON(t, bob, http.MethodPut, appServer.URL+"/api/admin/rankings/1", map[string]bool{"hidden": true}, http.StatusForbidden, nil)
 	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2", map[string]bool{"hidden": true}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
 	if len(leaderboard.Entries) != 1 || leaderboard.Entries[0].DisplayName != "Alice" {
 		t.Fatalf("hidden player must not appear in channel leaderboard: %#v", leaderboard.Entries)
+	}
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 1 || leaderboard.Entries[0].DisplayName != "Alice" {
+		t.Fatalf("hidden player must not appear in lobby leaderboard: %#v", leaderboard.Entries)
 	}
 	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2", map[string]bool{"hidden": false}, http.StatusOK, nil)
 	requestJSON(t, alice, http.MethodDelete, spacePath+"/tables/"+mainTableID, nil, http.StatusNoContent, nil)
