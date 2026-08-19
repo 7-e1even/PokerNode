@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
-  ArrowLeft, CircleDollarSign, Copy, Hash, KeyRound, Menu,
-  PanelLeftClose, PanelLeftOpen, Plus, Radio, Server, Shuffle, Table2,
-  Trash2,
+  ArrowLeft, CircleDollarSign, Copy, Crown, Link2, Plus, Shuffle, Table2,
+  Trash2, Trophy,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -10,13 +9,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -24,7 +23,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/utils";
 import { api, post, remove } from "./api";
 import PokerRoom from "./PokerRoom";
-import type { Space, TableSeatSummary, TableSummary, User } from "./types";
+import type { ChannelLeaderboardEntry, Space, TableSeatSummary, TableSummary, User } from "./types";
 
 interface Props {
   user: User;
@@ -32,23 +31,23 @@ interface Props {
   initialTableID?: string;
   onBack: () => void;
   onNavigateTable: (tableID?: string) => void;
+  onOpenBindings: () => void;
   onOpenBalances: () => void;
 }
 
-const sidebarStorageKey = "pokernode.channel-sidebar-collapsed.v2";
-
 type RoomPlayer = TableSeatSummary & { tableID: string; tableName: string };
 
-export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBalances }: Props) {
+export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBindings, onOpenBalances }: Props) {
   const [tables, setTables] = useState<TableSummary[]>([]);
+  const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(true);
+  const [leaderboardError, setLeaderboardError] = useState("");
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [deletingTable, setDeletingTable] = useState<TableSummary | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem(sidebarStorageKey) !== "false");
 
   const loadTables = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -63,6 +62,19 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     }
   }, [initialSpace.id]);
 
+  const loadLeaderboard = useCallback(async (showLoading = false) => {
+    if (showLoading) setLeaderboardLoading(true);
+    try {
+      const result = await api<{ leaderboard: ChannelLeaderboardEntry[] }>(`/api/spaces/${initialSpace.id}/leaderboard`);
+      setLeaderboard(Array.isArray(result.leaderboard) ? result.leaderboard : []);
+      setLeaderboardError("");
+    } catch (caught) {
+      setLeaderboardError(caught instanceof Error ? caught.message : "读取频道排名失败");
+    } finally {
+      if (showLoading) setLeaderboardLoading(false);
+    }
+  }, [initialSpace.id]);
+
   useEffect(() => {
     void loadTables(true);
     const timer = window.setInterval(() => void loadTables(), 5_000);
@@ -70,8 +82,10 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
   }, [loadTables]);
 
   useEffect(() => {
-    window.localStorage.setItem(sidebarStorageKey, String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
+    void loadLeaderboard(true);
+    const timer = window.setInterval(() => void loadLeaderboard(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [loadLeaderboard]);
 
   useEffect(() => {
     if (!initialTableID) {
@@ -105,6 +119,7 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
           setSelectedTable(null);
           onNavigateTable();
           void loadTables();
+          void loadLeaderboard();
         }}
       />
     );
@@ -116,7 +131,6 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
   }
 
   function openTable(table: TableSummary) {
-    setMobileOpen(false);
     setSelectedTable(table);
     onNavigateTable(table.id);
   }
@@ -140,60 +154,48 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     <div className="game-canvas channel-shell flex min-h-svh flex-col">
       <header className="game-topbar flex h-16 shrink-0 items-center justify-between gap-4 px-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          <Button className="lg:hidden" size="icon" variant="secondary" onClick={() => setMobileOpen(true)} aria-label="打开频道导航"><Menu /></Button>
-          <button className="shrink-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onBack} aria-label="返回 PokerNode 游戏大厅">
-            <BrandMark className="size-10" aria-hidden="true" />
-          </button>
+          <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" /><span className="hidden sm:inline">频道大厅</span></Button>
           <Separator orientation="vertical" className="h-8" />
-          <div className="min-w-0"><h1 className="truncate text-sm font-semibold">{initialSpace.name}</h1><p className="truncate text-xs text-muted-foreground">{tables.length} 桌 · {onlinePlayers} 人在线</p></div>
+          <BrandMark className="size-9 shrink-0" aria-hidden="true" />
+          <div className="min-w-0"><h1 className="truncate text-sm font-semibold">{initialSpace.name}</h1><p className="truncate text-xs text-muted-foreground">{tables.length} 个牌桌 · {onlinePlayers} 人在线</p></div>
         </div>
-        <div className="hidden items-center gap-2 sm:flex">{canManageBalances && <Button variant="outline" onClick={onOpenBalances}><CircleDollarSign data-icon="inline-start" />余额管理</Button>}{initialSpace.can_manage && initialSpace.invite_code && <Button variant="outline" onClick={() => void copyInvite()}><Copy data-icon="inline-start" />复制邀请码</Button>}</div>
+        <div className="flex items-center gap-2"><Button size="sm" variant="outline" onClick={onOpenBindings}><Link2 data-icon="inline-start" /><span className="hidden sm:inline">频道账号</span></Button>{canManageBalances && <Button size="sm" variant="outline" onClick={onOpenBalances}><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">余额管理</span></Button>}{initialSpace.can_manage && initialSpace.invite_code && <Button size="sm" variant="outline" onClick={() => void copyInvite()}><Copy data-icon="inline-start" /><span className="hidden sm:inline">邀请码</span></Button>}</div>
       </header>
 
-      <div className={cn("channel-workspace min-h-0 flex-1", sidebarCollapsed && "channel-workspace--collapsed")}>
-        <ChannelNavigation
-          className="hidden lg:flex"
-          collapsed={sidebarCollapsed}
-          space={initialSpace}
-          tables={tables}
-          onToggle={() => setSidebarCollapsed((current) => !current)}
-          onBack={onBack}
-          onOpenTable={openTable}
-          onCopyInvite={() => void copyInvite()}
-        />
-
-        <main className="channel-main min-w-0">
-          <section className="channel-table-panel flex min-w-0 flex-col">
-            <div className="channel-table-toolbar flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-              <div className="min-w-0"><div className="flex items-center gap-2"><Hash className="text-muted-foreground" /><strong className="truncate">频道选桌</strong><Badge variant="outline">{tables.length} 桌</Badge><Badge variant="outline">{onlinePlayers} 人</Badge></div><p className="mt-1 truncate text-xs text-muted-foreground">点击桌子进入 · 座位每 5 秒刷新</p></div>
-              <div className="flex items-center gap-2">{canManageBalances && <Button className="sm:hidden" size="icon" variant="outline" onClick={onOpenBalances} aria-label="余额管理"><CircleDollarSign /></Button>}<Button variant="outline" disabled={!quickTable} onClick={() => quickTable && openTable(quickTable)}><Shuffle data-icon="inline-start" />快速开始</Button>{initialSpace.can_manage && <Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />新建牌桌</Button>}</div>
+      <main className="min-w-0 flex-1 overflow-auto">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end" aria-labelledby="channel-title">
+            <div className="flex max-w-2xl flex-col gap-2">
+              <Badge variant="outline" className="w-fit">频道牌局</Badge>
+              <h2 id="channel-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">{initialSpace.name}</h2>
+              <p className="text-sm leading-6 text-muted-foreground">选择牌桌直接进入游戏；右侧排名会计入当前桌上的筹码。</p>
             </div>
-
-            <div className="table-map-floor min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-              {error && <Alert variant="destructive" className="mb-4"><AlertDescription>{error}</AlertDescription></Alert>}
-              {loading ? (
-                <div className="table-map-grid">{Array.from({ length: 8 }, (_, index) => <TableSkeleton key={index} />)}</div>
-              ) : tables.length === 0 ? (
-                <Empty className="min-h-96 border bg-card"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>房间里还没有牌桌</EmptyTitle><EmptyDescription>{initialSpace.can_manage ? "创建一张牌桌即可继续。" : "等待频道管理员创建牌桌。"}</EmptyDescription></EmptyHeader>{initialSpace.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
-              ) : (
-                <div className="table-map-grid">{tables.map((table) => <TableMapTile key={table.id} table={table} onOpen={() => openTable(table)} onDelete={initialSpace.can_manage ? () => setDeletingTable(table) : undefined} />)}{initialSpace.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
-              )}
-            </div>
+            <div className="flex gap-2"><Badge variant="secondary">{tables.length} 个牌桌</Badge><Badge variant="outline">{onlinePlayers} 人在线</Badge></div>
           </section>
 
-          <RoomPanel space={initialSpace} players={roomPlayers} onOpenTable={(tableID) => {
-            const table = tables.find((candidate) => candidate.id === tableID);
-            if (table) openTable(table);
-          }} />
-        </main>
-      </div>
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <Card className="min-w-0 [--card-spacing:--spacing(5)]">
+              <CardHeader>
+                <CardTitle>牌局</CardTitle>
+                <CardDescription>选择一张牌桌坐下，空位和玩家状态每 5 秒更新。</CardDescription>
+                <CardAction className="flex gap-2"><Button variant="outline" disabled={!quickTable} onClick={() => quickTable && openTable(quickTable)}><Shuffle data-icon="inline-start" />快速加入</Button>{initialSpace.can_manage && <Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />新建牌桌</Button>}</CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+              {loading ? (
+                  <div className="table-map-grid">{Array.from({ length: 6 }, (_, index) => <TableSkeleton key={index} />)}</div>
+              ) : tables.length === 0 ? (
+                  <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{initialSpace.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{initialSpace.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
+              ) : (
+                  <div className="table-map-grid">{tables.map((table) => <TableMapTile key={table.id} table={table} onOpen={() => openTable(table)} onDelete={initialSpace.can_manage ? () => setDeletingTable(table) : undefined} />)}{initialSpace.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
+              )}
+              </CardContent>
+            </Card>
 
-      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" className="w-72 p-0" showCloseButton={false}>
-          <SheetHeader className="border-b"><SheetTitle>{initialSpace.name}</SheetTitle><SheetDescription>选择频道牌桌</SheetDescription></SheetHeader>
-          <ChannelNavigation className="flex min-h-0 flex-1 border-0" collapsed={false} space={initialSpace} tables={tables} onBack={onBack} onOpenTable={openTable} onCopyInvite={() => { setMobileOpen(false); void copyInvite(); }} />
-        </SheetContent>
-      </Sheet>
+            <LeaderboardCard entries={leaderboard} players={roomPlayers} currentUserID={user.id} loading={leaderboardLoading} error={leaderboardError} />
+          </div>
+        </div>
+      </main>
 
       <CreateTableDialog
         open={createOpen}
@@ -227,64 +229,6 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
       </AlertDialog>
     </div>
   );
-}
-
-function ChannelNavigation({ className, collapsed, space, tables, onToggle, onBack, onOpenTable, onCopyInvite }: {
-  className?: string;
-  collapsed: boolean;
-  space: Space;
-  tables: TableSummary[];
-  onToggle?: () => void;
-  onBack: () => void;
-  onOpenTable: (table: TableSummary) => void;
-  onCopyInvite: () => void;
-}) {
-  return (
-    <aside className={cn("channel-nav-pod min-h-0 flex-col overflow-hidden", className)}>
-      {onToggle && (
-        <>
-          <div className={cn("flex min-h-12 items-center p-2", collapsed ? "justify-center" : "justify-between pl-4")}>
-            {!collapsed && <span className="text-xs font-medium text-muted-foreground">频道导航</span>}
-            <Tooltip><TooltipTrigger asChild><Button size="icon-sm" variant="ghost" onClick={onToggle} aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}>{collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}</Button></TooltipTrigger><TooltipContent side="right">{collapsed ? "展开侧边栏" : "收起侧边栏"}</TooltipContent></Tooltip>
-          </div>
-          <Separator />
-        </>
-      )}
-      <div className="flex flex-col gap-1 p-2"><SidebarAction collapsed={collapsed} label="返回游戏大厅" icon={<ArrowLeft data-icon="inline-start" />} onClick={onBack} /></div>
-      <Separator />
-      {!collapsed && <div className="flex items-center justify-between gap-2 px-4 pt-4"><span className="text-xs font-medium text-muted-foreground">牌桌列表</span><Badge variant="outline">{tables.length}</Badge></div>}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-1 p-3">
-          {tables.length === 0 ? (!collapsed && <p className="px-2 py-6 text-center text-xs text-muted-foreground">还没有牌桌</p>) : tables.map((table) => (
-            <Tooltip key={table.id}>
-              <TooltipTrigger asChild>
-                <Button className={cn("h-auto w-full min-w-0 py-2", collapsed ? "justify-center px-0" : "justify-start")} variant="ghost" onClick={() => onOpenTable(table)} aria-label={`${table.name}，${table.player_count} 人`}>
-                  <span className="relative grid size-8 shrink-0 place-items-center rounded-lg bg-muted"><Table2 />{collapsed && table.player_count > 0 && <span className="absolute -right-1 -top-1 grid size-4 place-items-center rounded-full bg-foreground text-[0.625rem] text-background">{table.player_count}</span>}</span>
-                  {!collapsed && <><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-sm">{tableDisplayName(table.name)}</strong><small className="block truncate text-xs text-muted-foreground">{money(table.small_blind_cents)} / {money(table.big_blind_cents)}</small></span><Badge className="shrink-0" variant="outline">{table.player_count}</Badge></>}
-                </Button>
-              </TooltipTrigger>
-              {collapsed && <TooltipContent side="right">{table.name} · {table.player_count}/{table.max_players} 人</TooltipContent>}
-            </Tooltip>
-          ))}
-        </div>
-      </ScrollArea>
-      {!onToggle && space.can_manage && space.invite_code && (
-        <div className="border-t p-3"><SidebarAction collapsed={collapsed} label="复制邀请码" icon={<Copy data-icon="inline-start" />} onClick={onCopyInvite} /></div>
-      )}
-    </aside>
-  );
-}
-
-function SidebarAction({ collapsed, label, icon, onClick, variant = "ghost" }: {
-  collapsed: boolean;
-  label: string;
-  icon: ReactNode;
-  onClick?: () => void;
-  variant?: "default" | "secondary" | "ghost";
-}) {
-  const control = <Button className={cn(collapsed ? "w-full px-0" : "w-full justify-start")} size={collapsed ? "icon" : "default"} variant={variant} onClick={onClick} aria-label={label}>{icon}{!collapsed && label}</Button>;
-  if (!collapsed) return control;
-  return <Tooltip><TooltipTrigger asChild>{control}</TooltipTrigger><TooltipContent side="right">{label}</TooltipContent></Tooltip>;
 }
 
 function TableMapTile({ table, onOpen, onDelete }: { table: TableSummary; onOpen: () => void; onDelete?: () => void }) {
@@ -334,21 +278,52 @@ function CreateTableTile({ onCreate }: { onCreate: () => void }) {
   return <Button variant="ghost" className="table-map-tile items-center justify-center" onClick={onCreate}><Avatar size="lg"><AvatarFallback>+</AvatarFallback></Avatar><strong>创建新牌桌</strong><span className="text-xs text-muted-foreground">设置名称和盲注</span></Button>;
 }
 
-function RoomPanel({ space, players, onOpenTable }: { space: Space; players: RoomPlayer[]; onOpenTable: (tableID: string) => void }) {
+function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
+  entries: ChannelLeaderboardEntry[];
+  players: RoomPlayer[];
+  currentUserID: number;
+  loading: boolean;
+  error: string;
+}) {
+  const activePlayers = new Map(players.map((player) => [player.user_id, player]));
+  const ranked = entries
+    .map((entry) => ({ ...entry, currentNetCents: entry.net_cents + (activePlayers.get(entry.user_id)?.stack_cents || 0) }))
+    .sort((left, right) => right.currentNetCents - left.currentNetCents || right.sessions - left.sessions || left.display_name.localeCompare(right.display_name));
+
   return (
-    <aside className="channel-player-pod hidden min-h-0 flex-col 2xl:flex">
-      <div className="flex min-h-16 shrink-0 items-center justify-between gap-3 px-4"><div><strong className="text-sm">房间玩家</strong><p className="text-xs text-muted-foreground">当前频道内已入座</p></div><Badge variant="outline">{players.length}</Badge></div>
-      <ScrollArea className="min-h-0 flex-1">
-        {players.length === 0 ? (
-          <Empty className="border-0 py-12"><EmptyHeader><EmptyMedia variant="icon"><Avatar size="sm"><AvatarFallback>?</AvatarFallback></Avatar></EmptyMedia><EmptyTitle>暂无玩家</EmptyTitle><EmptyDescription>选择一张空桌坐下。</EmptyDescription></EmptyHeader></Empty>
+    <Card className="[--card-spacing:--spacing(5)] xl:sticky xl:top-6">
+      <CardHeader>
+        <CardTitle>频道排名</CardTitle>
+        <CardDescription>按当前净胜筹码排序</CardDescription>
+        <CardAction><Trophy /></CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+        {loading ? (
+          <div className="flex flex-col gap-3" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <div className="flex items-center gap-3" key={index}><Skeleton className="size-7 rounded-full" /><Skeleton className="size-9 rounded-full" /><div className="grid flex-1 gap-2"><Skeleton className="h-4 w-24" /><Skeleton className="h-3 w-16" /></div><Skeleton className="h-5 w-16" /></div>)}</div>
+        ) : ranked.length === 0 ? (
+          <Empty className="border-0 py-10"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>暂无排名</EmptyTitle><EmptyDescription>完成第一场牌局后会显示战绩。</EmptyDescription></EmptyHeader></Empty>
         ) : (
-          <div className="flex flex-col gap-1 p-2">{players.map((player) => <Button key={`${player.tableID}:${player.user_id}`} variant="ghost" className="h-auto justify-start py-2" onClick={() => onOpenTable(player.tableID)}><Avatar><AvatarFallback>{initials(player.name)}</AvatarFallback></Avatar><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-sm">{player.name}</strong><small className="block truncate text-xs text-muted-foreground">{player.tableName} · {money(player.stack_cents)}</small></span></Button>)}</div>
+          <ScrollArea className="max-h-[36rem]">
+            <div className="flex flex-col gap-1 pr-3">
+              {ranked.map((entry, index) => {
+                const active = activePlayers.get(entry.user_id);
+                return (
+                  <div className="flex items-center gap-3 rounded-lg px-2 py-3" key={entry.user_id}>
+                    <Badge className="size-7 shrink-0 justify-center rounded-full p-0" variant={index === 0 ? "default" : "outline"}>{index === 0 ? <Crown /> : index + 1}</Badge>
+                    <Avatar><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
+                    <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="truncate text-sm">{entry.display_name}</strong>{entry.user_id === currentUserID && <Badge variant="secondary">我</Badge>}</div><p className="truncate text-xs text-muted-foreground">{active ? `${tableDisplayName(active.tableName)} · 桌上 ${money(active.stack_cents)}` : entry.sessions > 0 ? `${entry.sessions} 次买入` : "尚未开局"}</p></div>
+                    <strong className="shrink-0 tabular-nums">{netMoney(entry.currentNetCents)}</strong>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
         )}
-      </ScrollArea>
-      <Separator />
-      <div className="flex flex-col gap-3 p-4 text-xs"><CompactStatus icon={<Server />} label="New API" value={hostOf(space.newapi_base_url)} /><CompactStatus icon={<KeyRound />} label="个人凭证" value={space.is_bound ? "已绑定" : "待绑定"} /><CompactStatus icon={<Radio />} label="实时服务" value="在线" /></div>
-      <div className="p-3 pt-0"><Alert><CircleDollarSign /><AlertDescription>买入从当前频道余额扣除，离桌时返还剩余金额。</AlertDescription></Alert></div>
-    </aside>
+        <Separator />
+        <p className="text-xs leading-5 text-muted-foreground">净胜由已完成的买入和结算计算；正在牌桌上的筹码会实时计入。</p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -401,10 +376,6 @@ function CreateTableDialog({ open, spaceID, onClose, onCreated }: { open: boolea
   );
 }
 
-function CompactStatus({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return <span className="flex min-w-0 items-center gap-2 text-muted-foreground">{icon}<span>{label}</span><strong className="max-w-52 truncate text-foreground">{value}</strong></span>;
-}
-
 function TableSkeleton() {
   return <div className="table-map-tile pointer-events-none"><Skeleton className="h-4 w-2/3" /><Skeleton className="aspect-[880/493] w-36 max-w-full self-center rounded-[999px]" /><Skeleton className="h-3 w-full" /></div>;
 }
@@ -417,10 +388,10 @@ function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
 }
 
-function tableDisplayName(name: string) {
-  return name.replace(/\s*·\s*\$\d+(?:\.\d+)?\s*\/\s*\$\d+(?:\.\d+)?\s*$/, "");
+function netMoney(cents: number) {
+  return cents > 0 ? `+${money(cents)}` : money(cents);
 }
 
-function hostOf(value: string) {
-  try { return new URL(value).host; } catch { return value; }
+function tableDisplayName(name: string) {
+  return name.replace(/\s*·\s*\$\d+(?:\.\d+)?\s*\/\s*\$\d+(?:\.\d+)?\s*$/, "");
 }

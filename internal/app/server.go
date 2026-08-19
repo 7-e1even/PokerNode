@@ -68,6 +68,8 @@ func NewServer(database *store.Store, cipher *secure.Cipher, sessions *auth.Sess
 
 func (s *Server) Handler(webRoot string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReadiness)
 	mux.HandleFunc("GET /api/config", s.handlePublicConfig)
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -77,6 +79,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/admin/auth/login", s.handleAdminLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.withUser(s.handleMe))
+	mux.HandleFunc("GET /api/account-bindings", s.withUser(s.handleListAccountBindings))
 	mux.HandleFunc("GET /api/spaces", s.withUser(s.handleListSpaces))
 	mux.HandleFunc("POST /api/spaces", s.withUser(s.handleCreateSpace))
 	mux.HandleFunc("POST /api/spaces/join", s.withUser(s.handleJoinSpace))
@@ -87,6 +90,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/spaces/{spaceID}/managed-balances", s.withUser(s.handleManagedBalances))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/managed-balances/{userID}/adjust", s.withUser(s.handleAdjustManagedBalance))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/operations", s.withUser(s.handleOperations))
+	mux.HandleFunc("GET /api/spaces/{spaceID}/leaderboard", s.withUser(s.handleChannelLeaderboard))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/tables", s.withUser(s.handleListTables))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables", s.withUser(s.handleCreateTable))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/tables/{tableID}", s.withUser(s.handleTable))
@@ -107,6 +111,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/admin/users", s.withPermission(access.PermissionUsersManage, s.handleAdminCreateUser))
 	mux.HandleFunc("PATCH /api/admin/users/{userID}", s.withPermission(access.PermissionUsersManage, s.handleAdminUpdateUser))
 	mux.HandleFunc("DELETE /api/admin/users/{userID}", s.withPermission(access.PermissionUsersManage, s.handleAdminDeleteUser))
+	mux.HandleFunc("PUT /api/admin/rankings/{userID}", s.withUser(s.handleAdminRankingVisibility))
 	mux.HandleFunc("GET /api/admin/roles", s.withPermission(access.PermissionRolesManage, s.handleAdminRoles))
 	mux.HandleFunc("POST /api/admin/roles", s.withPermission(access.PermissionRolesManage, s.handleAdminCreateRole))
 	mux.HandleFunc("PATCH /api/admin/roles/{roleKey}", s.withPermission(access.PermissionRolesManage, s.handleAdminUpdateRole))

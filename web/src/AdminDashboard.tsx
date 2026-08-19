@@ -12,6 +12,7 @@ const sectionCopy: Record<AdminSection, { title: string; description: string }> 
   roles: { title: "角色管理", description: "自定义角色并配置每个角色的功能权限" },
   channels: { title: "频道管理", description: "查看有权管理的频道、成员绑定、牌桌和结算状态" },
   balances: { title: "余额管理", description: "查看并调整全部频道成员的 New API 余额" },
+  rankings: { title: "排名管理", description: "控制哪些账号会出现在频道排行榜中" },
   settings: { title: "系统设置", description: "控制平台注册策略" },
 };
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Activity, KeyRound, LockKeyhole, Plus, RadioTower, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, UserCog, UsersRound } from "lucide-react";
+import { Activity, Eye, EyeOff, KeyRound, LockKeyhole, Plus, RadioTower, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, Trophy, UserCog, UsersRound } from "lucide-react";
 import { toast } from "sonner";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { SectionCards } from "@/components/section-cards";
@@ -35,6 +35,31 @@ interface Props {
   onRegistrationChanged: (enabled: boolean) => void;
 }
 
+function normalizeAdminOverview(result: AdminOverview): AdminOverview {
+  return {
+    ...result,
+    users: Array.isArray(result.users) ? result.users : [],
+    counts: result.counts ?? {},
+    spaces: Array.isArray(result.spaces) ? result.spaces : [],
+    platform_counts: result.platform_counts ?? {
+      spaces: 0,
+      memberships: 0,
+      bound_memberships: 0,
+      tables: 0,
+      operations: 0,
+      failed_operations: 0,
+    },
+    permissions: Array.isArray(result.permissions) ? result.permissions : [],
+    roles: Array.isArray(result.roles)
+      ? result.roles.map((role) => ({
+          ...role,
+          permissions: Array.isArray(role.permissions) ? role.permissions : [],
+        }))
+      : [],
+    permission_catalog: Array.isArray(result.permission_catalog) ? result.permission_catalog : [],
+  };
+}
+
 export default function AdminConsole({ currentUser, section, onRegistrationChanged }: Props) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,8 +76,9 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     setError("");
     try {
       const result = await api<AdminOverview>("/api/admin/overview");
-      setOverview(result);
-      onRegistrationChanged(result.registration_enabled);
+      const normalized = normalizeAdminOverview(result);
+      setOverview(normalized);
+      onRegistrationChanged(normalized.registration_enabled);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取运营数据失败");
     } finally {
@@ -139,6 +165,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     roles: canManageRoles,
     channels: permissions.has("channels:manage"),
     balances: permissions.has("balances:manage"),
+    rankings: currentUser.role === "super_admin",
     settings: canManageRegistration,
   }[section];
   if (!sectionAllowed) {
@@ -147,6 +174,10 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
 
   if (section === "roles") {
     return <RoleManager roles={overview.roles} catalog={overview.permission_catalog} onChanged={(roles) => setOverview((current) => current ? { ...current, roles } : current)} />;
+  }
+
+  if (section === "rankings") {
+    return <RankingManager users={users} allUsers={overview.users} query={query} onQueryChange={setQuery} onChanged={(user) => setOverview((current) => current ? withUser(current, user) : current)} />;
   }
 
   if (section === "channels") {
@@ -413,6 +444,62 @@ function ChannelScopeField({ spaces, selected, onChange }: { spaces: AdminSpaceS
         {visible.length === 0 ? <p className="p-6 text-center text-sm text-muted-foreground">{spaces.length === 0 ? "该用户尚未加入任何频道" : "没有匹配的已加入频道"}</p> : <FieldGroup className="gap-1">{visible.map((space) => <Field key={space.id} orientation="horizontal" className="rounded-lg p-2 hover:bg-muted/50"><FieldContent><FieldTitle>{space.name}</FieldTitle><FieldDescription>@{space.owner_username} · {hostOf(space.newapi_base_url)}</FieldDescription></FieldContent><Switch checked={selected.includes(space.id)} onCheckedChange={(checked) => onChange(checked ? [...selected, space.id] : selected.filter((id) => id !== space.id))} aria-label={`分配频道 ${space.name}`} /></Field>)}</FieldGroup>}
       </div>
     </Field>
+  );
+}
+
+function RankingManager({ users, allUsers, query, onQueryChange, onChanged }: {
+  users: User[];
+  allUsers: User[];
+  query: string;
+  onQueryChange: (value: string) => void;
+  onChanged: (user: User) => void;
+}) {
+  const [busyID, setBusyID] = useState<number | null>(null);
+  const hiddenCount = allUsers.filter((user) => user.ranking_hidden).length;
+
+  async function toggle(user: User) {
+    setBusyID(user.id);
+    try {
+      const result = await put<{ user: User }>(`/api/admin/rankings/${user.id}`, { hidden: !user.ranking_hidden });
+      onChanged(result.user);
+      toast.success(result.user.ranking_hidden ? `已屏蔽 ${user.display_name} 的排名` : `已恢复 ${user.display_name} 的排名`);
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "排名设置保存失败");
+    } finally {
+      setBusyID(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-background p-4 sm:p-6 lg:p-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>排名展示账号</CardTitle>
+          <CardDescription>屏蔽只会让账号从全部频道排行榜消失，不影响登录、频道成员身份和牌局数据。</CardDescription>
+          <CardAction><Badge variant={hiddenCount > 0 ? "secondary" : "outline"}>{hiddenCount} 个已屏蔽</Badge></CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <InputGroup className="max-w-md"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="搜索账号或显示名称" aria-label="搜索排名账号" /></InputGroup>
+          {users.length === 0 ? (
+            <Empty className="min-h-64 border"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>没有匹配的账号</EmptyTitle><EmptyDescription>换一个用户名或显示名称试试。</EmptyDescription></EmptyHeader></Empty>
+          ) : (
+            <div className="overflow-hidden rounded-xl border">
+              <Table>
+                <TableHeader><TableRow><TableHead>账号</TableHead><TableHead>角色</TableHead><TableHead>排名状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                <TableBody>{users.map((user) => (
+                  <TableRow key={user.id}>
+                    <TableCell><div className="flex items-center gap-3"><Avatar><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="min-w-0"><strong className="block truncate">{user.display_name}</strong><small className="block truncate text-muted-foreground">@{user.username}</small></span></div></TableCell>
+                    <TableCell><Badge variant="outline">{user.role_name || user.role}</Badge></TableCell>
+                    <TableCell><Badge variant={user.ranking_hidden ? "secondary" : "outline"}>{user.ranking_hidden ? "已屏蔽" : "正常展示"}</Badge></TableCell>
+                    <TableCell className="text-right"><Button size="sm" variant={user.ranking_hidden ? "default" : "outline"} disabled={busyID !== null} onClick={() => void toggle(user)}>{busyID === user.id ? <Spinner data-icon="inline-start" /> : user.ranking_hidden ? <Eye data-icon="inline-start" /> : <EyeOff data-icon="inline-start" />}{user.ranking_hidden ? "恢复排名" : "屏蔽排名"}</Button></TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

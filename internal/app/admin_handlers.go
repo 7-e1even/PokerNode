@@ -28,6 +28,10 @@ type adminUserUpdate struct {
 	ManagedSpaceIDs *[]string `json:"managed_space_ids"`
 }
 
+type adminRankingVisibilityInput struct {
+	Hidden bool `json:"hidden"`
+}
+
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, actor store.User) error {
 	permissions, err := s.permissionsForUser(r.Context(), actor)
 	if err != nil {
@@ -88,6 +92,37 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		"roles":                roles,
 		"permission_catalog":   access.Catalog(),
 	})
+	return nil
+}
+
+func (s *Server) handleAdminRankingVisibility(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	if actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以管理排名展示"}
+	}
+	userID, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
+	if err != nil || userID <= 0 {
+		return &apiError{Status: http.StatusBadRequest, Message: "用户 ID 无效"}
+	}
+	var input adminRankingVisibilityInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	if err := s.store.SetUserRankingHidden(r.Context(), userID, input.Hidden); err != nil {
+		return err
+	}
+	user, err := s.store.UserByID(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	user.ManagedSpaceIDs, err = s.store.ManagedSpaceIDs(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	user.JoinedSpaceIDs, err = s.store.JoinedSpaceIDs(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 	return nil
 }
 

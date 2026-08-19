@@ -10,6 +10,7 @@ export interface User {
   status: UserStatus;
   created_at: string;
   wechat_bound?: boolean;
+  ranking_hidden?: boolean;
   permissions?: string[];
   managed_space_ids?: string[];
   joined_space_ids?: string[];
@@ -88,6 +89,11 @@ export interface Membership {
   newapi_display_name?: string;
   user_token_last4?: string;
   poker_display_name: string;
+}
+
+export interface AccountBinding {
+  space: Space;
+  membership: Membership;
 }
 
 export interface Card {
@@ -192,6 +198,13 @@ export interface WalletOperation {
   status: string;
   error?: string;
   created_at: string;
+}
+
+export interface ChannelLeaderboardEntry {
+  user_id: number;
+  display_name: string;
+  net_cents: number;
+  sessions: number;
 }
 
 export interface ManagedBalanceMember {

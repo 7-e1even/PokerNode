@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, CheckCircle2, Copy, DoorOpen, Gamepad2, KeyRound, LogOut,
-  Menu, Plus, Server, Settings2, ShieldCheck,
+  ArrowRight, CheckCircle2, Copy, DoorOpen, Gamepad2, Link2, LogOut,
+  Menu, Plus, RadioTower, ShieldCheck,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -30,11 +30,12 @@ interface Props {
   user: User;
   wechatLoginEnabled: boolean;
   onOpenSpace: (space: Space) => void;
+  onOpenBindings: () => void;
   onOpenAdmin?: () => void;
   onLogout: () => void;
 }
 
-export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpenAdmin, onLogout }: Props) {
+export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpenBindings, onOpenAdmin, onLogout }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
@@ -85,6 +86,7 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
       <GameHeader
         user={user}
         onOpenMenu={() => setMobileOpen(true)}
+        onOpenBindings={onOpenBindings}
         onOpenAdmin={onOpenAdmin}
         wechatLoginEnabled={wechatLoginEnabled}
         onLogout={() => void logout()}
@@ -124,9 +126,10 @@ export default function Dashboard({ user, wechatLoginEnabled, onOpenSpace, onOpe
   );
 }
 
-function GameHeader({ user, onOpenMenu, onOpenAdmin, wechatLoginEnabled, onLogout }: {
+function GameHeader({ user, onOpenMenu, onOpenBindings, onOpenAdmin, wechatLoginEnabled, onLogout }: {
   user: User;
   onOpenMenu: () => void;
+  onOpenBindings: () => void;
   onOpenAdmin?: () => void;
   wechatLoginEnabled: boolean;
   onLogout: () => void;
@@ -145,7 +148,7 @@ function GameHeader({ user, onOpenMenu, onOpenAdmin, wechatLoginEnabled, onLogou
         <DropdownMenuTrigger asChild>
           <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
+        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
       </DropdownMenu>
     </header>
   );
@@ -170,7 +173,7 @@ function LobbySidebar({ className, spaces, onOpenSpace, onCreate, onJoin }: {
       </div>
       <Separator />
       <ScrollArea className="min-h-0 flex-1">
-        <div className="p-3"><LobbySidebarGroup label="你的牌局" spaces={spaces} empty="还没有牌局" onOpenSpace={onOpenSpace} /></div>
+        <div className="p-3"><LobbySidebarGroup label="我的频道" spaces={spaces} empty="还没有频道" onOpenSpace={onOpenSpace} /></div>
       </ScrollArea>
       <Separator />
       <div className="p-4"><div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="relative flex size-2"><span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-50 motion-reduce:animate-none" /><span className="relative inline-flex size-2 rounded-full bg-primary" /></span><span>服务运行正常</span></div></div>
@@ -188,7 +191,7 @@ function LobbySidebarGroup({ label, spaces, empty, onOpenSpace }: {
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between px-1 pb-1"><span className="text-xs font-medium text-muted-foreground">{label}</span><Badge variant="outline">{spaces.length}</Badge></div>
       {spaces.length === 0 ? <p className="px-2 py-4 text-center text-xs text-muted-foreground">{empty}</p> : spaces.map((space) => (
-        <Button key={space.id} className="h-auto justify-start py-2" variant="ghost" onClick={() => onOpenSpace(space)}><span className="game-room-avatar grid size-8 shrink-0 place-items-center rounded-lg font-heading font-semibold">{space.name.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-sm">{space.name}</strong><small className="block truncate text-xs text-muted-foreground">{space.can_manage ? "我管理的牌局" : "已加入的牌局"}</small></span></Button>
+        <Button key={space.id} className="h-auto justify-start py-2" variant="ghost" onClick={() => onOpenSpace(space)}><span className="game-room-avatar grid size-8 shrink-0 place-items-center rounded-lg font-heading font-semibold">{space.name.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-sm">{space.name}</strong><small className="block truncate text-xs text-muted-foreground">{space.can_manage ? "我管理的频道" : "已加入的频道"}</small></span></Button>
       ))}
     </div>
   );
@@ -205,39 +208,32 @@ function LobbyView({ user, spaces, loading, error, onCreate, onJoin, onOpenSpace
 }) {
   return (
     <div className="player-lobby flex flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-        <header className="flex max-w-2xl flex-col gap-3" aria-labelledby="lobby-title">
-          <Badge variant="outline" className="w-fit"><Gamepad2 data-icon="inline-start" />游戏大厅</Badge>
-          <h1 id="lobby-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">欢迎回来，{user.display_name}</h1>
-          <p className="text-base leading-7 text-muted-foreground">想自己开一桌，还是加入朋友的牌局？选择一种方式就可以开始。</p>
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+        <header className="flex flex-col justify-between gap-5 border-b pb-6 sm:flex-row sm:items-end" aria-labelledby="lobby-title">
+          <div className="flex max-w-2xl flex-col gap-3">
+            <Badge variant="outline" className="w-fit"><RadioTower data-icon="inline-start" />频道大厅</Badge>
+            <h1 id="lobby-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">选择频道，开始牌局</h1>
+            <p className="text-sm leading-6 text-muted-foreground">{user.display_name}，进入一个频道即可查看牌桌和当前排名。</p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
+            <Button onClick={onCreate}><Plus data-icon="inline-start" />创建频道</Button>
+          </div>
         </header>
 
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
-        <section className="flex flex-col gap-4" aria-labelledby="quick-start-title">
-          <div>
-            <h2 id="quick-start-title" className="font-heading text-xl font-semibold">开始一场牌局</h2>
-            <p className="mt-1 text-sm text-muted-foreground">选择适合你的方式，几步即可进入牌桌。</p>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <QuickStartCard mode="create" onAction={onCreate} />
-            <QuickStartCard mode="join" onAction={onJoin} />
-          </div>
-        </section>
-
         <section className="flex flex-col gap-4" aria-labelledby="your-games-title">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2"><h2 id="your-games-title" className="font-heading text-xl font-semibold">你的牌局</h2><Badge variant="outline">{spaces.length}</Badge></div>
-              <p className="mt-1 text-sm text-muted-foreground">你创建和加入过的牌局都会集中在这里。</p>
-            </div>
+          <div className="flex items-center gap-2">
+            <h2 id="your-games-title" className="font-heading text-xl font-semibold">我的频道</h2>
+            <Badge variant="secondary">{spaces.length}</Badge>
           </div>
 
           {loading ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <SpaceSkeleton key={index} />)}</div>
           ) : spaces.length === 0 ? (
-            <Empty className="min-h-64 border bg-card">
-              <EmptyHeader><EmptyMedia variant="icon"><Gamepad2 /></EmptyMedia><EmptyTitle>还没有牌局</EmptyTitle><EmptyDescription>从上面选择“发起牌局”或“输入邀请码”，完成后会显示在这里。</EmptyDescription></EmptyHeader>
+            <Empty className="min-h-80 border bg-card">
+              <EmptyHeader><EmptyMedia variant="icon"><RadioTower /></EmptyMedia><EmptyTitle>还没有频道</EmptyTitle><EmptyDescription>创建自己的频道，或者使用朋友发来的邀请码加入。</EmptyDescription></EmptyHeader>
             </Empty>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{spaces.map((space) => <SpaceCard key={space.id} space={space} onOpen={() => onOpenSpace(space)} />)}</div>
@@ -248,59 +244,29 @@ function LobbyView({ user, spaces, loading, error, onCreate, onJoin, onOpenSpace
   );
 }
 
-function QuickStartCard({ mode, onAction }: { mode: "create" | "join"; onAction: () => void }) {
-  const create = mode === "create";
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{create ? "发起新牌局" : "加入朋友的牌局"}</CardTitle>
-        <CardDescription>{create ? "创建一个专属牌局，设置好牌桌后把邀请码发给朋友。" : "输入朋友发来的邀请码，进入他们已经准备好的牌局。"}</CardDescription>
-        <CardAction><Badge variant={create ? "secondary" : "outline"}>{create ? "我是房主" : "我有邀请码"}</Badge></CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
-        {create ? (
-          <><p className="flex items-center gap-2"><ShieldCheck className="size-4 shrink-0" />你负责牌桌、邀请和成员设置</p><p className="flex items-center gap-2"><Copy className="size-4 shrink-0" />创建后把专属邀请码发给朋友</p></>
-        ) : (
-          <><p className="flex items-center gap-2"><DoorOpen className="size-4 shrink-0" />只需要朋友分享的邀请码</p><p className="flex items-center gap-2"><Gamepad2 className="size-4 shrink-0" />加入后即可选择牌桌开始游戏</p></>
-        )}
-      </CardContent>
-      <CardFooter>
-        <Button className="w-full" size="lg" variant={create ? "default" : "outline"} onClick={onAction}>
-          {create ? <Plus data-icon="inline-start" /> : <DoorOpen data-icon="inline-start" />}
-          {create ? "发起牌局" : "输入邀请码"}
-          <ArrowRight data-icon="inline-end" />
-        </Button>
-      </CardFooter>
-    </Card>
-  );
-}
-
 function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
   return (
-    <Card size="sm" className="lobby-channel-card">
+    <Card className="lobby-channel-card h-full [--card-spacing:--spacing(6)]">
       <CardHeader>
         <div className="flex min-w-0 items-center gap-3">
-          <span className="game-room-avatar grid size-10 shrink-0 place-items-center rounded-xl font-heading font-semibold">{space.name.slice(0, 1).toUpperCase()}</span>
-          <div className="min-w-0"><CardTitle className="truncate">{space.name}</CardTitle><CardDescription className="truncate">{hostOf(space.newapi_base_url)}</CardDescription></div>
+          <span className="game-room-avatar grid size-12 shrink-0 place-items-center rounded-xl font-heading text-lg font-semibold">{space.name.slice(0, 1).toUpperCase()}</span>
+          <div className="min-w-0"><CardTitle className="truncate text-lg">{space.name}</CardTitle><CardDescription>{space.can_manage ? "你管理的频道" : "朋友的频道"}</CardDescription></div>
         </div>
-        <CardAction><Badge variant="outline">{space.can_manage ? "我管理" : "已加入"}</Badge></CardAction>
+        <CardAction><Badge variant={space.can_manage ? "secondary" : "outline"}>{space.can_manage ? "管理员" : "成员"}</Badge></CardAction>
       </CardHeader>
-      <CardContent>
-        <div className="lobby-channel-meta">
-          <span><KeyRound />{space.is_bound ? "个人凭证已绑定" : "等待绑定个人凭证"}</span>
-          <span><Server />独立 New API 连接</span>
-        </div>
+      <CardContent className="flex flex-1 items-end justify-between gap-4">
+        <p className="text-sm leading-6 text-muted-foreground">查看牌桌、在线牌友和频道排名。</p>
+        <RadioTower className="shrink-0 text-muted-foreground" />
       </CardContent>
-      <CardFooter className="lobby-channel-card__footer">
-        <span>{space.can_manage ? "可管理牌桌与邀请" : "可以继续进入牌桌"}</span>
-        <Button className="w-full sm:w-auto" size="sm" variant={space.can_manage ? "secondary" : "default"} onClick={onOpen}>{space.can_manage ? <Settings2 data-icon="inline-start" /> : <ArrowRight data-icon="inline-start" />}{space.can_manage ? "管理牌局" : "进入牌局"}</Button>
+      <CardFooter>
+        <Button className="w-full" size="lg" onClick={onOpen}>进入频道<ArrowRight data-icon="inline-end" /></Button>
       </CardFooter>
     </Card>
   );
 }
 
 function SpaceSkeleton() {
-  return <Card size="sm" className="lobby-channel-card" aria-hidden="true"><CardHeader><div className="flex items-center gap-3"><Skeleton className="size-10 rounded-xl" /><div className="grid flex-1 gap-2"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-1/2" /></div></div></CardHeader><CardContent><Skeleton className="h-8 w-full" /></CardContent><CardFooter className="justify-between gap-3"><Skeleton className="h-3 w-1/2" /><Skeleton className="h-7 w-24" /></CardFooter></Card>;
+  return <Card className="lobby-channel-card [--card-spacing:--spacing(6)]" aria-hidden="true"><CardHeader><div className="flex items-center gap-3"><Skeleton className="size-12 rounded-xl" /><div className="grid flex-1 gap-2"><Skeleton className="h-5 w-2/3" /><Skeleton className="h-3 w-1/2" /></div></div></CardHeader><CardContent><Skeleton className="h-10 w-full" /></CardContent><CardFooter><Skeleton className="h-10 w-full" /></CardFooter></Card>;
 }
 
 function SpaceDialog({ mode, onClose, onCreated }: { mode: "create" | "join"; onClose: () => void; onCreated: (space: Space) => void }) {
@@ -358,8 +324,4 @@ function initials(name: string) {
 
 function roleLabel(role: User["role"]) {
   return ({ super_admin: "超级管理员", operator: "运营", player: "玩家" } as const)[role];
-}
-
-function hostOf(value: string) {
-  try { return new URL(value).host; } catch { return value; }
 }

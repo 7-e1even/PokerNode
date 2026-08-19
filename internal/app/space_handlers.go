@@ -31,6 +31,28 @@ type bindInput struct {
 	Token string `json:"token"`
 }
 
+type accountBindingView struct {
+	Space      store.Space  `json:"space"`
+	Membership store.Member `json:"membership"`
+}
+
+func (s *Server) handleListAccountBindings(w http.ResponseWriter, r *http.Request, user store.User) error {
+	spaces, err := s.store.SpacesForUser(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	bindings := make([]accountBindingView, 0, len(spaces))
+	for _, space := range spaces {
+		member, err := s.store.Member(r.Context(), space.ID, user.ID)
+		if err != nil {
+			return err
+		}
+		bindings = append(bindings, accountBindingView{Space: space, Membership: member})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bindings": bindings})
+	return nil
+}
+
 func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request, user store.User) error {
 	spaces, err := s.spacesForActor(r.Context(), user)
 	if err != nil {
@@ -161,6 +183,13 @@ func (s *Server) handleBindMember(w http.ResponseWriter, r *http.Request, user s
 	if err != nil {
 		return err
 	}
+	seated, err := s.userSeatedInSpace(r.Context(), space.ID, user.ID)
+	if err != nil {
+		return err
+	}
+	if seated {
+		return &apiError{Status: http.StatusConflict, Message: "请先从当前频道的牌桌离桌并完成结算，再更换绑定账号"}
+	}
 	var input bindInput
 	if err := decodeJSON(r, &input); err != nil {
 		return err
@@ -201,6 +230,23 @@ func (s *Server) handleBindMember(w http.ResponseWriter, r *http.Request, user s
 	return nil
 }
 
+func (s *Server) userSeatedInSpace(ctx context.Context, spaceID string, userID int64) (bool, error) {
+	tableIDs, err := s.store.TableStateIDs(ctx, spaceID)
+	if err != nil {
+		return false, err
+	}
+	for _, tableID := range tableIDs {
+		runtime, err := s.runtimeForTable(ctx, spaceID, tableID)
+		if err != nil {
+			return false, err
+		}
+		if runtime.table.IsSeated(userID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request, user store.User) error {
 	space, member, token, err := s.memberCredentials(r, user.ID)
 	if err != nil {
@@ -227,6 +273,19 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request, user s
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"operations": operations})
+	return nil
+}
+
+func (s *Server) handleChannelLeaderboard(w http.ResponseWriter, r *http.Request, user store.User) error {
+	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
+	if err != nil {
+		return err
+	}
+	entries, err := s.store.ChannelLeaderboard(r.Context(), space.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"leaderboard": entries})
 	return nil
 }
 

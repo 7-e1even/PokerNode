@@ -42,11 +42,12 @@ type autoProvisionedUser struct {
 func TestFullSpaceAndTableFlow(t *testing.T) {
 	upstream := &fakeNewAPI{
 		users: map[string]map[string]any{
-			"admin-token": {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
-			"alice-token": {"id": int64(1), "username": "alice-newapi", "display_name": "Alice API", "role": 1, "status": 1},
-			"bob-token":   {"id": int64(2), "username": "bob-newapi", "display_name": "Bob API", "role": 1, "status": 1},
+			"admin-token":   {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
+			"alice-token":   {"id": int64(1), "username": "alice-newapi", "display_name": "Alice API", "role": 1, "status": 1},
+			"bob-token":     {"id": int64(2), "username": "bob-newapi", "display_name": "Bob API", "role": 1, "status": 1},
+			"bob-alt-token": {"id": int64(3), "username": "bob-existing", "display_name": "Bob Existing", "role": 1, "status": 1},
 		},
-		quotas: map[int64]int64{1: 100_000_000, 2: 100_000_000, 99: 100_000_000},
+		quotas: map[int64]int64{1: 100_000_000, 2: 100_000_000, 3: 100_000_000, 99: 100_000_000},
 	}
 	newAPIServer := httptest.NewServer(http.HandlerFunc(upstream.serveHTTP))
 	defer newAPIServer.Close()
@@ -63,6 +64,8 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	appServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
 	defer appServer.Close()
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/healthz", nil, http.StatusOK, nil)
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/readyz", nil, http.StatusOK, nil)
 
 	alice := newTestClient(t)
 	bob := newTestClient(t)
@@ -113,6 +116,13 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "bob", "display_name": "Bob", "password": "password-2"}, http.StatusCreated, nil)
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/spaces/join", map[string]string{"invite_code": createResult.Space.InviteCode}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-token"}, http.StatusOK, nil)
+	var accountBindings struct {
+		Bindings []accountBindingView `json:"bindings"`
+	}
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/account-bindings", nil, http.StatusOK, &accountBindings)
+	if len(accountBindings.Bindings) != 1 || accountBindings.Bindings[0].Membership.NewAPIUsername != "bob-newapi" {
+		t.Fatalf("expected Bob's channel binding, got %#v", accountBindings.Bindings)
+	}
 	requestJSON(t, bob, http.MethodGet, spacePath+"/managed-balances", nil, http.StatusForbidden, nil)
 	var managed struct {
 		Members []struct {
@@ -161,8 +171,17 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, bob, http.MethodGet, spacePath+"/tables/"+createTableResult.Table.ID, nil, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodDelete, spacePath+"/tables/"+createTableResult.Table.ID, nil, http.StatusForbidden, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/tables/"+createTableResult.Table.ID+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-alt-token"}, http.StatusConflict, nil)
 	requestJSON(t, alice, http.MethodDelete, spacePath+"/tables/"+createTableResult.Table.ID, nil, http.StatusConflict, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/tables/"+createTableResult.Table.ID+"/leave", map[string]any{}, http.StatusOK, nil)
+	var rebound struct {
+		Membership store.Member `json:"membership"`
+	}
+	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-alt-token"}, http.StatusOK, &rebound)
+	if rebound.Membership.NewAPIUserID != 3 || rebound.Membership.NewAPIUsername != "bob-existing" {
+		t.Fatalf("expected existing New API account to be bound, got %#v", rebound.Membership)
+	}
+	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-token"}, http.StatusOK, nil)
 	requestJSON(t, alice, http.MethodDelete, spacePath+"/tables/"+createTableResult.Table.ID, nil, http.StatusNoContent, nil)
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables/"+createTableResult.Table.ID, nil, http.StatusNotFound, nil)
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tablesResult)
@@ -215,6 +234,23 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	if aliceQuota+bobQuota != 200_000_000 {
 		t.Fatal("player balances should be conserved")
 	}
+	var leaderboard struct {
+		Entries []store.ChannelLeaderboardEntry `json:"leaderboard"`
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[0].NetCents != 50 || leaderboard.Entries[0].Sessions != 2 {
+		t.Fatalf("unexpected channel leaderboard: %#v", leaderboard.Entries)
+	}
+	if leaderboard.Entries[1].DisplayName != "Alice" || leaderboard.Entries[1].NetCents != -50 || leaderboard.Entries[1].Sessions != 1 {
+		t.Fatalf("unexpected second leaderboard entry: %#v", leaderboard.Entries[1])
+	}
+	requestJSON(t, bob, http.MethodPut, appServer.URL+"/api/admin/rankings/1", map[string]bool{"hidden": true}, http.StatusForbidden, nil)
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2", map[string]bool{"hidden": true}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 1 || leaderboard.Entries[0].DisplayName != "Alice" {
+		t.Fatalf("hidden player must not appear in channel leaderboard: %#v", leaderboard.Entries)
+	}
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2", map[string]bool{"hidden": false}, http.StatusOK, nil)
 	requestJSON(t, alice, http.MethodDelete, spacePath+"/tables/"+mainTableID, nil, http.StatusNoContent, nil)
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tablesResult)
 	if len(tablesResult.Tables) != 0 {
@@ -422,7 +458,22 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	}
 	requestJSON(t, operator, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "operator", "display_name": "Operator", "password": "password-2"}, http.StatusCreated, &operatorResult)
 
-	requestJSON(t, admin, http.MethodGet, appServer.URL+"/api/admin/overview", nil, http.StatusOK, nil)
+	var emptyOverview struct {
+		Users             json.RawMessage `json:"users"`
+		Spaces            json.RawMessage `json:"spaces"`
+		Permissions       json.RawMessage `json:"permissions"`
+		Roles             json.RawMessage `json:"roles"`
+		PermissionCatalog json.RawMessage `json:"permission_catalog"`
+	}
+	requestJSON(t, admin, http.MethodGet, appServer.URL+"/api/admin/overview", nil, http.StatusOK, &emptyOverview)
+	for field, value := range map[string]json.RawMessage{
+		"users": emptyOverview.Users, "spaces": emptyOverview.Spaces, "permissions": emptyOverview.Permissions,
+		"roles": emptyOverview.Roles, "permission_catalog": emptyOverview.PermissionCatalog,
+	} {
+		if len(value) == 0 || value[0] != '[' {
+			t.Fatalf("admin overview %s must be a JSON array, got %s", field, value)
+		}
+	}
 	adminLogin := newTestClient(t)
 	requestJSON(t, adminLogin, http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "admin", "password": "password-1"}, http.StatusOK, nil)
 	requestJSON(t, adminLogin, http.MethodGet, appServer.URL+"/api/admin/overview", nil, http.StatusOK, nil)

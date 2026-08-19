@@ -23,7 +23,9 @@ PokerNode 里的 `$` 是 New API quota 换算后的显示单位，不是银行�
 
 德州扑克规则基线、随机性说明和专业边界见 [`docs/POKER_RULES.md`](docs/POKER_RULES.md)。
 
-## 最快启动：Docker Compose
+## 一键部署：GHCR + Docker Compose
+
+`main` 分支和 `v*` 标签会由 GitHub Actions 自动测试并构建 `linux/amd64`、`linux/arm64` 镜像，发布到 `ghcr.io/7-e1even/pokernode`。服务器不需要源码、Go 或 Node.js，只需要 Docker Compose。
 
 1. 复制环境文件：
 
@@ -51,13 +53,35 @@ PokerNode 里的 `$` 是 New API quota 换算后的显示单位，不是银行�
 
    第一个结果用于 `POKERNODE_ENCRYPTION_KEY`，第二个结果用于 `POKERNODE_SESSION_SECRET`。密钥一旦用于生产数据库，不要随意更换，否则已保存的 New API 凭证将无法解密。
 
-4. 启动：
+4. 启动。Compose 会直接拉取 GitHub Container Registry 中的生产镜像：
 
    ```powershell
-   docker compose up -d --build
+   docker compose up -d
    ```
 
-4. 打开 [http://localhost:8080](http://localhost:8080)。
+5. 确认容器健康并打开 [http://localhost:8080](http://localhost:8080)：
+
+   ```powershell
+   docker compose ps
+   Invoke-RestMethod http://localhost:8080/readyz
+   ```
+
+后续升级只需要：
+
+```powershell
+docker compose pull
+docker compose up -d
+```
+
+默认监听所有网卡的 `8080` 端口。可在 `.env` 中通过 `POKERNODE_BIND_ADDRESS`、`POKERNODE_PORT` 修改宿主机监听地址和端口；通过 `POKERNODE_IMAGE` 可以固定到发布标签或 `sha-<完整提交哈希>` 镜像。
+
+如需从当前源码本地构建，使用开发覆盖文件，不会改变默认的 GHCR 部署路径：
+
+```powershell
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+镜像发布工作流位于 [`.github/workflows/container.yml`](.github/workflows/container.yml)。它使用临时 `GITHUB_TOKEN` 写入 GHCR，不需要在仓库中保存 Registry 密码。
 
 ### 可选：微信登录
 

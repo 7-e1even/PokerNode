@@ -39,6 +39,7 @@ type User struct {
 	RoleName        string   `json:"role_name"`
 	Status          string   `json:"status"`
 	CreatedAt       string   `json:"created_at"`
+	RankingHidden   bool     `json:"ranking_hidden"`
 	ManagedSpaceIDs []string `json:"managed_space_ids,omitempty"`
 	JoinedSpaceIDs  []string `json:"joined_space_ids,omitempty"`
 }
@@ -90,6 +91,13 @@ type WalletOperation struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
+type ChannelLeaderboardEntry struct {
+	UserID      int64  `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	NetCents    int64  `json:"net_cents"`
+	Sessions    int    `json:"sessions"`
+}
+
 type AdminSpaceSummary struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
@@ -139,6 +147,8 @@ func Open(databaseURL string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 func (s *Store) migrate() error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS roles (
@@ -157,6 +167,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'player',
   status TEXT NOT NULL DEFAULT 'active',
+  ranking_hidden BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users(LOWER(username));
@@ -239,6 +250,9 @@ CREATE TABLE IF NOT EXISTS table_states (
 		return err
 	}
 	if err := s.ensureColumn("users", "status", "TEXT NOT NULL DEFAULT 'active'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("users", "ranking_hidden", "BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("wallet_operations", "table_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -334,10 +348,10 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, passwordH
 
 func (s *Store) UserByExternalIdentity(ctx context.Context, provider, subject string) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden
 FROM auth_identities i JOIN users u ON u.id=i.user_id LEFT JOIN roles r ON r.key=u.role
 WHERE i.provider=$1 AND i.subject=$2`, provider, subject).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt)
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
 	return user, mapNotFound(err)
 }
 
@@ -467,8 +481,8 @@ func createUser(ctx context.Context, queryer sqlQueryer, username, displayName, 
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at FROM users u LEFT JOIN roles r ON r.key=u.role WHERE LOWER(u.username)=LOWER($1)`, username).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE LOWER(u.username)=LOWER($1)`, username).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
 	return user, mapNotFound(err)
 }
 
@@ -482,20 +496,20 @@ type sqlQueryer interface {
 
 func userByID(ctx context.Context, queryer sqlQueryer, id int64) (User, error) {
 	var user User
-	err := queryer.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.id=$1`, id).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt)
+	err := queryer.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.id=$1`, id).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
 	return user, mapNotFound(err)
 }
 
 func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at FROM users u LEFT JOIN roles r ON r.key=u.role ORDER BY u.created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role ORDER BY u.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
-	var users []User
+	users := make([]User, 0)
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -551,6 +565,21 @@ func (s *Store) UpdateUser(ctx context.Context, userID int64, username, displayN
 		return ErrNotFound
 	}
 	return tx.Commit()
+}
+
+func (s *Store) SetUserRankingHidden(ctx context.Context, userID int64, hidden bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET ranking_hidden=$1 WHERE id=$2`, hidden, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
@@ -620,7 +649,7 @@ FROM spaces s JOIN users u ON u.id=s.owner_user_id ORDER BY s.created_at DESC`)
 		return nil, AdminPlatformCounts{}, err
 	}
 	defer rows.Close()
-	var spaces []AdminSpaceSummary
+	spaces := make([]AdminSpaceSummary, 0)
 	var counts AdminPlatformCounts
 	for rows.Next() {
 		var space AdminSpaceSummary
@@ -818,6 +847,35 @@ func (s *Store) WalletOperations(ctx context.Context, spaceID string, userID int
 		operations = append(operations, operation)
 	}
 	return operations, rows.Err()
+}
+
+func (s *Store) ChannelLeaderboard(ctx context.Context, spaceID string) ([]ChannelLeaderboardEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,
+COALESCE(SUM(CASE
+  WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  ELSE 0
+END),0)::BIGINT AS net_cents,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions
+FROM space_members m
+JOIN users u ON u.id=m.user_id
+LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+WHERE m.space_id=$1 AND u.ranking_hidden=FALSE
+GROUP BY u.id,u.display_name
+ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]ChannelLeaderboardEntry, 0)
+	for rows.Next() {
+		var entry ChannelLeaderboardEntry
+		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.NetCents, &entry.Sessions); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }
 
 func (s *Store) SaveTableState(ctx context.Context, spaceID, tableID string, data []byte) error {

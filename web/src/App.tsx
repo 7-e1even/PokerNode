@@ -3,6 +3,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { api } from "./api";
 import AuthScreen from "./AuthScreen";
+import AccountBindings from "./AccountBindings";
 import ChannelRoom from "./ChannelRoom";
 import Dashboard from "./Dashboard";
 import BalanceManager from "./BalanceManager";
@@ -109,6 +110,10 @@ export default function App() {
 
   if (!user) return <AuthScreen registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} onAuthenticated={setUser} />;
 
+  if (route.page === "account_bindings") {
+    return <AccountBindings onBack={() => navigate("/")} onOpenSpace={(spaceID) => navigate(`/channels/${spaceID}`)} />;
+  }
+
   if (route.page === "channel" || route.page === "channel_balances") {
     if (routeError) {
       return (
@@ -131,6 +136,7 @@ export default function App() {
         initialTableID={route.tableID}
         onBack={() => navigate("/")}
         onNavigateTable={(tableID) => navigate(tableID ? `/channels/${selectedSpace.id}/tables/${tableID}` : `/channels/${selectedSpace.id}`)}
+        onOpenBindings={() => navigate("/account/bindings")}
         onOpenBalances={() => navigate(`/channels/${selectedSpace.id}/balances`)}
       />
     );
@@ -140,6 +146,7 @@ export default function App() {
     <Dashboard
       user={user}
       wechatLoginEnabled={wechatLoginEnabled}
+      onOpenBindings={() => navigate("/account/bindings")}
       onOpenSpace={(space) => {
         setSelectedSpace(space);
         navigate(`/channels/${space.id}`);
@@ -156,6 +163,7 @@ export default function App() {
 
 type AppRoute =
   | { page: "lobby" }
+  | { page: "account_bindings" }
   | { page: "admin_login" }
   | { page: "admin"; section: AdminSection }
   | { page: "channel"; channelID: string; tableID?: string }
@@ -165,10 +173,11 @@ type AppRoute =
 function parseRoute(pathname: string): AppRoute {
   const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts.length === 0) return { page: "lobby" };
+  if (parts.length === 2 && parts[0] === "account" && parts[1] === "bindings") return { page: "account_bindings" };
   if (parts[0] === "admin") {
     if (parts.length === 1) return { page: "admin", section: "overview" };
     if (parts.length === 2 && parts[1] === "login") return { page: "admin_login" };
-    if (parts.length === 2 && (["users", "roles", "channels", "balances", "settings"] as string[]).includes(parts[1])) return { page: "admin", section: parts[1] as AdminSection };
+    if (parts.length === 2 && (["users", "roles", "channels", "balances", "rankings", "settings"] as string[]).includes(parts[1])) return { page: "admin", section: parts[1] as AdminSection };
   }
   if (parts[0] === "channels" && parts[1]) {
     if (parts.length === 2) return { page: "channel", channelID: parts[1] };

@@ -1,0 +1,6 @@
+services:
+  pokernode:
+    image: pokernode:local
+    build:
+      context: .
+    pull_policy: build
