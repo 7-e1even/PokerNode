@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -17,11 +18,41 @@ const (
 	mainTableID = "main"
 	minBuyIn    = int64(2_000)
 	maxBuyIn    = int64(100_000)
+
+	kickVoteDuration   = 60 * time.Second
+	kickRejoinCooldown = 5 * time.Minute
 )
 
 type tableEnvelope struct {
-	Type  string         `json:"type"`
-	Table poker.Snapshot `json:"table"`
+	Type     string         `json:"type"`
+	Table    poker.Snapshot `json:"table"`
+	KickVote *kickVoteView  `json:"kick_vote"`
+	Notice   string         `json:"notice,omitempty"`
+}
+
+type kickVote struct {
+	TargetUserID    int64
+	TargetName      string
+	InitiatorUserID int64
+	InitiatorName   string
+	EligibleVoters  map[int64]struct{}
+	YesVoters       map[int64]struct{}
+	NoVoters        map[int64]struct{}
+	RequiredYes     int
+	ExpiresAt       time.Time
+}
+
+type kickVoteView struct {
+	TargetUserID  int64  `json:"target_user_id"`
+	TargetName    string `json:"target_name"`
+	InitiatorName string `json:"initiator_name"`
+	YesCount      int    `json:"yes_count"`
+	NoCount       int    `json:"no_count"`
+	RequiredYes   int    `json:"required_yes"`
+	EligibleCount int    `json:"eligible_count"`
+	ExpiresAt     int64  `json:"expires_at"`
+	ViewerVote    string `json:"viewer_vote,omitempty"`
+	CanVote       bool   `json:"can_vote"`
 }
 
 type tableSummary struct {
@@ -166,7 +197,7 @@ func (s *Server) handleTable(w http.ResponseWriter, r *http.Request, user store.
 		return err
 	}
 	defer runtime.mu.Unlock()
-	writeJSON(w, http.StatusOK, tableEnvelope{Type: "table", Table: runtime.table.Snapshot(user.ID)})
+	writeJSON(w, http.StatusOK, s.tableEnvelopeLocked(runtime, user.ID))
 	return nil
 }
 
@@ -197,6 +228,15 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 		return err
 	}
 	defer runtime.mu.Unlock()
+	clearExpiredKickVoteLocked(runtime)
+	if runtime.kickVote != nil {
+		return &apiError{Status: http.StatusConflict, Message: "牌桌正在进行移出投票，请等待投票结束"}
+	}
+	if until := runtime.kickedUntil[user.ID]; time.Now().Before(until) {
+		return &apiError{Status: http.StatusConflict, Message: "你刚被投票移出，5 分钟后才能重新入座"}
+	} else if !until.IsZero() {
+		delete(runtime.kickedUntil, user.ID)
+	}
 	if runtime.table.IsSeated(user.ID) {
 		return &apiError{Status: http.StatusConflict, Message: "你已经在牌桌上"}
 	}
@@ -282,6 +322,7 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
 			return err
 		}
+		runtime.kickVote = nil
 		s.broadcast(space.ID, tableID, runtime)
 		writeJSON(w, http.StatusOK, map[string]any{"settled_cents": 0, "table": runtime.table.Snapshot(user.ID)})
 		return nil
@@ -312,6 +353,7 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return err
 	}
+	runtime.kickVote = nil
 	if err := s.store.UpdateWalletOperation(r.Context(), operationID, "completed", ""); err != nil {
 		s.logger.Error("mark cash-out operation complete", "operation_id", operationID, "error", err)
 	}
@@ -340,10 +382,196 @@ func (s *Server) handleTableReady(w http.ResponseWriter, r *http.Request, user s
 	if err := s.persistTable(r.Context(), space.ID, tableID, runtime.table); err != nil {
 		return err
 	}
+	if runtime.kickVote != nil {
+		target := runtime.table.Snapshot(runtime.kickVote.TargetUserID)
+		targetReady := false
+		for _, player := range target.Players {
+			if player.UserID == runtime.kickVote.TargetUserID {
+				targetReady = player.Ready
+				break
+			}
+		}
+		if !target.CanLeave || targetReady {
+			runtime.kickVote = nil
+		}
+	}
 	s.syncTableTimerLocked(space.ID, tableID, runtime)
 	s.broadcast(space.ID, tableID, runtime)
-	writeJSON(w, http.StatusOK, tableEnvelope{Type: "table", Table: runtime.table.Snapshot(user.ID)})
+	writeJSON(w, http.StatusOK, s.tableEnvelopeLocked(runtime, user.ID))
 	return nil
+}
+
+func (s *Server) handleTableKickVote(w http.ResponseWriter, r *http.Request, user store.User) error {
+	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
+	if err != nil {
+		return err
+	}
+	var input struct {
+		Action       string `json:"action"`
+		TargetUserID int64  `json:"target_user_id"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	tableID := tableIDFromRequest(r)
+	runtime, err := s.runtimeForTable(r.Context(), space.ID, tableID)
+	if err != nil {
+		return err
+	}
+	if err := lockTableRuntime(runtime); err != nil {
+		return err
+	}
+	defer runtime.mu.Unlock()
+	clearExpiredKickVoteLocked(runtime)
+
+	switch input.Action {
+	case "start":
+		if runtime.kickVote != nil {
+			return &apiError{Status: http.StatusConflict, Message: "已有一项移出投票正在进行"}
+		}
+		vote, err := newKickVote(runtime.table.Snapshot(user.ID), user.ID, input.TargetUserID)
+		if err != nil {
+			return err
+		}
+		runtime.kickVote = vote
+	case "approve", "reject":
+		vote := runtime.kickVote
+		if vote == nil {
+			return &apiError{Status: http.StatusConflict, Message: "当前没有进行中的移出投票"}
+		}
+		if _, eligible := vote.EligibleVoters[user.ID]; !eligible {
+			return &apiError{Status: http.StatusForbidden, Message: "你不能参与这项投票"}
+		}
+		if _, voted := vote.YesVoters[user.ID]; voted {
+			return &apiError{Status: http.StatusConflict, Message: "你已经投过票了"}
+		}
+		if _, voted := vote.NoVoters[user.ID]; voted {
+			return &apiError{Status: http.StatusConflict, Message: "你已经投过票了"}
+		}
+		if input.Action == "approve" {
+			vote.YesVoters[user.ID] = struct{}{}
+		} else {
+			vote.NoVoters[user.ID] = struct{}{}
+		}
+	default:
+		return &apiError{Status: http.StatusBadRequest, Message: "投票操作不正确"}
+	}
+
+	vote := runtime.kickVote
+	notice := "投票已提交"
+	if len(vote.YesVoters) >= vote.RequiredYes {
+		runtime.kickVote = nil
+		settled, err := s.kickPlayerLocked(r.Context(), space, tableID, runtime, vote.TargetUserID, vote.InitiatorUserID)
+		if err != nil {
+			s.broadcast(space.ID, tableID, runtime)
+			return err
+		}
+		if runtime.kickedUntil == nil {
+			runtime.kickedUntil = make(map[int64]time.Time)
+		}
+		runtime.kickedUntil[vote.TargetUserID] = time.Now().Add(kickRejoinCooldown)
+		notice = fmt.Sprintf("投票通过，已将 %s 移出并结算 %s", vote.TargetName, formatCents(settled))
+	} else {
+		remaining := len(vote.EligibleVoters) - len(vote.YesVoters) - len(vote.NoVoters)
+		if len(vote.YesVoters)+remaining < vote.RequiredYes {
+			runtime.kickVote = nil
+			notice = "同意票不足，移出投票未通过"
+		}
+	}
+
+	s.broadcast(space.ID, tableID, runtime)
+	response := s.tableEnvelopeLocked(runtime, user.ID)
+	response.Notice = notice
+	writeJSON(w, http.StatusOK, response)
+	return nil
+}
+
+func newKickVote(snapshot poker.Snapshot, initiatorUserID, targetUserID int64) (*kickVote, error) {
+	if !snapshot.CanLeave {
+		return nil, &apiError{Status: http.StatusConflict, Message: "只有等待开局时的在桌玩家可以发起投票"}
+	}
+	var initiator, target *poker.PlayerView
+	eligible := make(map[int64]struct{})
+	for index := range snapshot.Players {
+		player := &snapshot.Players[index]
+		if player.UserID == initiatorUserID {
+			initiator = player
+		}
+		if player.UserID == targetUserID {
+			target = player
+		}
+		if player.UserID != targetUserID && player.Stack > 0 {
+			eligible[player.UserID] = struct{}{}
+		}
+	}
+	if initiator == nil || initiator.Stack <= 0 {
+		return nil, &apiError{Status: http.StatusForbidden, Message: "只有有筹码的在桌玩家可以发起投票"}
+	}
+	if target == nil || target.UserID == initiatorUserID {
+		return nil, &apiError{Status: http.StatusBadRequest, Message: "请选择其他在桌玩家"}
+	}
+	if target.Stack <= 0 || target.Ready {
+		return nil, &apiError{Status: http.StatusConflict, Message: "只能对尚未准备的有筹码玩家发起投票"}
+	}
+	if _, ok := eligible[initiatorUserID]; !ok {
+		return nil, &apiError{Status: http.StatusForbidden, Message: "你不能发起这项投票"}
+	}
+	yes := map[int64]struct{}{initiatorUserID: {}}
+	return &kickVote{
+		TargetUserID: target.UserID, TargetName: target.Name,
+		InitiatorUserID: initiator.UserID, InitiatorName: initiator.Name,
+		EligibleVoters: eligible, YesVoters: yes, NoVoters: make(map[int64]struct{}),
+		RequiredYes: len(eligible)/2 + 1, ExpiresAt: time.Now().Add(kickVoteDuration),
+	}, nil
+}
+
+func (s *Server) kickPlayerLocked(ctx context.Context, space store.Space, tableID string, runtime *tableRuntime, targetUserID, actorUserID int64) (int64, error) {
+	stack, seated := runtime.table.StackFor(targetUserID)
+	if !seated || !runtime.table.Snapshot(targetUserID).CanLeave {
+		return 0, &apiError{Status: http.StatusConflict, Message: "目标玩家已经离桌或牌局已经开始"}
+	}
+	member, err := s.store.Member(ctx, space.ID, targetUserID)
+	if err != nil {
+		return 0, err
+	}
+	quota, err := newapi.CentsToQuota(stack, space.QuotaPerUSD)
+	if err != nil {
+		return 0, err
+	}
+	adminToken, err := s.adminToken(space)
+	if err != nil {
+		return 0, err
+	}
+	operationID := uuid.NewString()
+	operation := store.WalletOperation{
+		ID: operationID, SpaceID: space.ID, TableID: tableID, UserID: targetUserID,
+		NewAPIUserID: member.NewAPIUserID, ActorUserID: actorUserID, Kind: "cash_out",
+		Cents: stack, Quota: quota, Note: "经牌桌投票移出", Status: "pending",
+	}
+	if err := s.store.CreateWalletOperation(ctx, operation); err != nil {
+		return 0, err
+	}
+	if err := s.newAPI.AdjustQuota(ctx, space.BaseURL, adminToken, member.NewAPIUserID, quota, true); err != nil {
+		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", err.Error())
+		return 0, &apiError{Status: http.StatusBadGateway, Message: "余额结算未确认，玩家仍保留在牌桌，请频道管理员核对操作 " + operationID}
+	}
+	settled, err := runtime.table.Leave(targetUserID)
+	if err != nil {
+		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local leave failed: "+err.Error())
+		return 0, pokerAPIError(err)
+	}
+	if err := s.persistTable(ctx, space.ID, tableID, runtime.table); err != nil {
+		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
+		return 0, err
+	}
+	if err := s.store.UpdateWalletOperation(ctx, operationID, "completed", ""); err != nil {
+		s.logger.Error("mark vote kick cash-out complete", "operation_id", operationID, "error", err)
+	}
+	return settled, nil
+}
+
+func formatCents(cents int64) string {
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }
 
 func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user store.User) error {
@@ -375,7 +603,7 @@ func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user 
 	}
 	s.syncTableTimerLocked(space.ID, tableID, runtime)
 	s.broadcast(space.ID, tableID, runtime)
-	writeJSON(w, http.StatusOK, tableEnvelope{Type: "table", Table: runtime.table.Snapshot(user.ID)})
+	writeJSON(w, http.StatusOK, s.tableEnvelopeLocked(runtime, user.ID))
 	return nil
 }
 
@@ -390,7 +618,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user st
 		return err
 	}
 	if err := s.hub.Serve(tableRoomKey(space.ID, tableID), user.ID, func(viewerID int64) any {
-		return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID)}
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		return s.tableEnvelopeLocked(runtime, viewerID)
 	}, s.websocketOriginPatterns, w, r); err != nil {
 		s.logger.Warn("accept realtime connection", "origin", r.Header.Get("Origin"), "host", r.Host, "error", err)
 	}
@@ -439,8 +669,39 @@ func (s *Server) persistTable(ctx context.Context, spaceID, tableID string, tabl
 
 func (s *Server) broadcast(spaceID, tableID string, runtime *tableRuntime) {
 	s.hub.Broadcast(tableRoomKey(spaceID, tableID), func(viewerID int64) any {
-		return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID)}
+		return s.tableEnvelopeLocked(runtime, viewerID)
 	})
+}
+
+func (s *Server) tableEnvelopeLocked(runtime *tableRuntime, viewerID int64) tableEnvelope {
+	clearExpiredKickVoteLocked(runtime)
+	return tableEnvelope{Type: "table", Table: runtime.table.Snapshot(viewerID), KickVote: kickVoteForViewer(runtime.kickVote, viewerID)}
+}
+
+func clearExpiredKickVoteLocked(runtime *tableRuntime) {
+	if runtime.kickVote != nil && !time.Now().Before(runtime.kickVote.ExpiresAt) {
+		runtime.kickVote = nil
+	}
+}
+
+func kickVoteForViewer(vote *kickVote, viewerID int64) *kickVoteView {
+	if vote == nil {
+		return nil
+	}
+	view := &kickVoteView{
+		TargetUserID: vote.TargetUserID, TargetName: vote.TargetName, InitiatorName: vote.InitiatorName,
+		YesCount: len(vote.YesVoters), NoCount: len(vote.NoVoters), RequiredYes: vote.RequiredYes,
+		EligibleCount: len(vote.EligibleVoters), ExpiresAt: vote.ExpiresAt.UnixMilli(),
+	}
+	_, eligible := vote.EligibleVoters[viewerID]
+	if _, voted := vote.YesVoters[viewerID]; voted {
+		view.ViewerVote = "approve"
+	} else if _, voted := vote.NoVoters[viewerID]; voted {
+		view.ViewerVote = "reject"
+	} else {
+		view.CanVote = eligible
+	}
+	return view
 }
 
 func (s *Server) syncTableTimerLocked(spaceID, tableID string, runtime *tableRuntime) {

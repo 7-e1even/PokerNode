@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import {
   ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Copy, Crown, DoorOpen, History,
-  KeyRound, LogOut, MoreHorizontal, Server, Settings2, ShieldCheck,
+  KeyRound, LogOut, MoreHorizontal, Server, Settings2, ShieldCheck, ThumbsDown, ThumbsUp, UserMinus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/utils";
 import { api, post, put } from "./api";
-import type { Balance, Card as PokerCard, Membership, Player, Space, TableState, TableSummary, User, WalletOperation } from "./types";
+import type { Balance, Card as PokerCard, KickVote, Membership, Player, Space, TableEnvelope, TableState, TableSummary, User, WalletOperation } from "./types";
 
 interface Props {
   user: User;
@@ -56,6 +60,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   const [space, setSpace] = useState(initialSpace);
   const [membership, setMembership] = useState<Membership | null>(null);
   const [table, setTable] = useState<TableState | null>(null);
+  const [kickVote, setKickVote] = useState<KickVote | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "offline">("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,11 +83,12 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
     try {
       const [detail, tableResult] = await Promise.all([
         api<{ space: Space; membership: Membership }>(`/api/spaces/${space.id}`),
-        api<{ table: TableState }>(`/api/spaces/${space.id}/tables/${initialTable.id}`),
+        api<TableEnvelope>(`/api/spaces/${space.id}/tables/${initialTable.id}`),
       ]);
       setSpace(detail.space);
       setMembership(detail.membership);
       setTable(tableResult.table);
+      setKickVote(tableResult.kick_vote);
       if (detail.space.is_bound) void loadBalance();
     } catch (caught) {
       reportError(caught instanceof Error ? caught.message : "牌桌加载失败");
@@ -106,9 +112,10 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
       if (disposed || pollInFlight) return;
       pollInFlight = true;
       try {
-        const result = await api<{ table: TableState }>(tableURL);
+        const result = await api<TableEnvelope>(tableURL);
         if (!disposed) {
           setTable(result.table);
+          setKickVote(result.kick_vote);
           if (socket?.readyState !== WebSocket.OPEN) setConnection("polling");
         }
       } catch {
@@ -152,7 +159,10 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
       nextSocket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.type === "table") setTable(message.table);
+          if (message.type === "table") {
+            setTable(message.table);
+            setKickVote(message.kick_vote ?? null);
+          }
         } catch { /* ignore malformed server messages */ }
       };
       nextSocket.onclose = () => {
@@ -182,6 +192,15 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
       socket?.close();
     };
   }, [initialTable.id, space.id]);
+
+  const previousViewerSeat = useRef<number | null>(null);
+  useEffect(() => {
+    if (!table) return;
+    if (previousViewerSeat.current !== null && previousViewerSeat.current >= 0 && table.viewer_seat < 0) {
+      void loadBalance();
+    }
+    previousViewerSeat.current = table.viewer_seat;
+  }, [loadBalance, table]);
 
   return (
     <main className="poker-room flex h-svh min-h-0 flex-col overflow-hidden">
@@ -234,7 +253,19 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
 
       <section className="poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
         {table ? (
-          <TableScene spaceID={space.id} tableID={initialTable.id} table={table} user={user} onError={reportError} onChanged={setTable} onBalanceChanged={() => void loadBalance()} />
+          <TableScene
+            spaceID={space.id}
+            tableID={initialTable.id}
+            table={table}
+            kickVote={kickVote}
+            user={user}
+            onError={reportError}
+            onChanged={(nextTable, nextKickVote) => {
+              setTable(nextTable);
+              setKickVote(nextKickVote);
+            }}
+            onBalanceChanged={() => void loadBalance()}
+          />
         ) : (
           <TableLoading />
         )}
@@ -258,13 +289,14 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   );
 }
 
-function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalanceChanged }: {
+function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChanged, onBalanceChanged }: {
   spaceID: string;
   tableID: string;
   table: TableState;
+  kickVote: KickVote | null;
   user: User;
   onError: (message: string) => void;
-  onChanged: (table: TableState) => void;
+  onChanged: (table: TableState, kickVote: KickVote | null) => void;
   onBalanceChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -272,8 +304,11 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
   const [amount, setAmount] = useState(0);
   const [burnEvent, setBurnEvent] = useState(0);
   const [chipFlights, setChipFlights] = useState<ChipFlight[]>([]);
+  const [kickTarget, setKickTarget] = useState<Player | null>(null);
   const [winnerStage, setWinnerStage] = useState<"announcement" | "crown" | null>(() => table.last_result ? "announcement" : null);
   const secondsRemaining = useActionCountdown(table.action_deadline_at, table.turn_id);
+  const kickVoteSecondsRemaining = useActionCountdown(kickVote?.expires_at ?? 0, kickVote?.target_user_id ?? 0);
+  const activeKickVote = kickVote && kickVoteSecondsRemaining !== 0 ? kickVote : null;
   const boardTracking = useRef({ handID: table.hand_id, length: table.board?.length || 0 });
   const potTracking = useRef({ handID: table.hand_id, total: totalPotForAnimation(table), actingSeat: table.acting_seat });
   const chipFlightID = useRef(0);
@@ -368,8 +403,9 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
   async function run(path: string, body?: unknown, balanceChanged = false) {
     setBusy(true);
     try {
-      const result = await post<{ table: TableState }>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, body);
-      if (result.table) onChanged(result.table);
+      const result = await post<TableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, body);
+      if (result.table) onChanged(result.table, result.kick_vote ?? null);
+      if (result.notice) toast.success(result.notice);
       if (balanceChanged) onBalanceChanged();
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "操作失败");
@@ -443,7 +479,18 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
           </div>
         )}
 
-        {layouts.map((layout) => <Seat key={layout.player.user_id} layout={layout} isViewer={layout.player.user_id === user.id} table={table} isWinner={winningUserIDs.has(layout.player.user_id)} showWinnerCrown={winnerStage === "crown"} />)}
+        {layouts.map((layout) => (
+          <Seat
+            key={layout.player.user_id}
+            layout={layout}
+            isViewer={layout.player.user_id === user.id}
+            table={table}
+            isWinner={winningUserIDs.has(layout.player.user_id)}
+            showWinnerCrown={winnerStage === "crown"}
+            canRequestKick={seated && table.can_start && layout.player.user_id !== user.id && layout.player.stack_cents > 0 && !layout.player.ready && !activeKickVote}
+            onRequestKick={() => setKickTarget(layout.player)}
+          />
+        ))}
       </div>
 
       {!seated && (
@@ -459,7 +506,36 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
       {seated && !allowed.can_act && (
         <ActionCard className={table.can_start ? "w-[min(38rem,calc(100%-2rem))]" : "w-auto"}>
           <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
-            {table.can_start ? (
+            {activeKickVote ? (
+              <>
+                <div className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm">是否移出 {activeKickVote.target_name}？</strong>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {activeKickVote.initiator_name} 发起 · 同意 {activeKickVote.yes_count}/{activeKickVote.required_yes} · 剩余 {kickVoteSecondsRemaining ?? 0} 秒
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center justify-end gap-1">
+                  {activeKickVote.target_user_id === user.id ? (
+                    <>
+                      {table.can_leave && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}
+                      <Button className="rounded-full" size="lg" disabled={busy || viewerPlayer?.ready} onClick={() => void run("ready")}>
+                        {busy ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                        {busy ? "准备中…" : "我在，立即准备"}
+                      </Button>
+                    </>
+                  ) : activeKickVote.can_vote ? (
+                    <>
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void run("kick-vote", { action: "reject" })}><ThumbsDown data-icon="inline-start" />反对</Button>
+                      <Button className="rounded-full" size="lg" variant="destructive" disabled={busy} onClick={() => void run("kick-vote", { action: "approve" })}>
+                        {busy ? <Spinner data-icon="inline-start" /> : <ThumbsUp data-icon="inline-start" />}{busy ? "提交中…" : "同意移出"}
+                      </Button>
+                    </>
+                  ) : (
+                    <Badge variant="outline">{activeKickVote.viewer_vote === "approve" ? "你已同意" : activeKickVote.viewer_vote === "reject" ? "你已反对" : "等待表决"}</Badge>
+                  )}
+                </div>
+              </>
+            ) : table.can_start ? (
               <>
                 <div className="min-w-0">
                   <strong className="block truncate text-sm">
@@ -516,6 +592,24 @@ function TableScene({ spaceID, tableID, table, user, onError, onChanged, onBalan
           </Card>
         </div>
       )}
+
+      <AlertDialog open={kickTarget !== null} onOpenChange={(open) => !open && setKickTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia><UserMinus /></AlertDialogMedia>
+            <AlertDialogTitle>发起移出 {kickTarget?.name} 的投票？</AlertDialogTitle>
+            <AlertDialogDescription>
+              发起者自动计一票，除该玩家外的在桌玩家严格过半同意即通过。通过后会自动结算其筹码，并在 5 分钟内禁止重新入座。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={busy} onClick={() => kickTarget && void run("kick-vote", { action: "start", target_user_id: kickTarget.user_id })}>
+              <UserMinus data-icon="inline-start" />发起投票
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -528,7 +622,15 @@ function ActionCard({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: PlayerLayout; isViewer: boolean; table: TableState; isWinner: boolean; showWinnerCrown: boolean }) {
+function Seat({ layout, isViewer, table, isWinner, showWinnerCrown, canRequestKick, onRequestKick }: {
+  layout: PlayerLayout;
+  isViewer: boolean;
+  table: TableState;
+  isWinner: boolean;
+  showWinnerCrown: boolean;
+  canRequestKick: boolean;
+  onRequestKick: () => void;
+}) {
   const { player, x, y } = layout;
   const positions = seatPositions(table, player.seat);
   const action = player.is_acting ? "轮到行动" : playerActionLabel(player);
@@ -560,6 +662,14 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: 
             </div>
             <span className="block text-xs text-muted-foreground tabular-nums">{money(player.stack_cents)}</span>
           </div>
+          {canRequestKick && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="icon-xs" variant="ghost" aria-label={`投票移出 ${player.name}`} onClick={onRequestKick}><UserMinus /></Button>
+              </TooltipTrigger>
+              <TooltipContent>投票移出未准备玩家</TooltipContent>
+            </Tooltip>
+          )}
         </CardContent>
       </Card>
       {(action || player.bet_cents > 0) && (

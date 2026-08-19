@@ -167,6 +167,26 @@ export interface TableState {
   };
 }
 
+export interface KickVote {
+  target_user_id: number;
+  target_name: string;
+  initiator_name: string;
+  yes_count: number;
+  no_count: number;
+  required_yes: number;
+  eligible_count: number;
+  expires_at: number;
+  viewer_vote?: "approve" | "reject";
+  can_vote: boolean;
+}
+
+export interface TableEnvelope {
+  type: "table";
+  table: TableState;
+  kick_vote: KickVote | null;
+  notice?: string;
+}
+
 export interface TableSummary {
   id: string;
   name: string;

@@ -398,6 +398,127 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables/"+mainTableID, nil, http.StatusNotFound, nil)
 }
 
+func TestTableKickVoteSettlesIdlePlayerAndUnblocksReadiness(t *testing.T) {
+	upstream := &fakeNewAPI{
+		users: map[string]map[string]any{
+			"admin-token": {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
+			"alice-token": {"id": int64(1), "username": "alice-api", "display_name": "Alice API", "role": 1, "status": 1},
+			"bob-token":   {"id": int64(2), "username": "bob-api", "display_name": "Bob API", "role": 1, "status": 1},
+			"carol-token": {"id": int64(3), "username": "carol-api", "display_name": "Carol API", "role": 1, "status": 1},
+		},
+		quotas: map[int64]int64{1: 100_000_000, 2: 100_000_000, 3: 100_000_000, 99: 100_000_000},
+	}
+	newAPIServer := httptest.NewServer(http.HandlerFunc(upstream.serveHTTP))
+	defer newAPIServer.Close()
+
+	database := openTestDatabase(t)
+	cipher, err := secure.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := auth.NewSessions("test-session-secret-that-is-long-enough", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := NewServer(database, cipher, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	appServer := httptest.NewServer(application.Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer appServer.Close()
+
+	type registeredUser struct {
+		User struct {
+			ID int64 `json:"id"`
+		} `json:"user"`
+	}
+	register := func(client *http.Client, username, displayName string) int64 {
+		t.Helper()
+		var result registeredUser
+		requestJSON(t, client, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
+			"username": username, "display_name": displayName, "password": "password-1",
+		}, http.StatusCreated, &result)
+		return result.User.ID
+	}
+
+	alice := newTestClient(t)
+	bob := newTestClient(t)
+	carol := newTestClient(t)
+	aliceID := register(alice, "alice_vote", "Alice")
+	var created struct {
+		Space struct {
+			ID         string `json:"id"`
+			InviteCode string `json:"invite_code"`
+		} `json:"space"`
+	}
+	requestJSON(t, alice, http.MethodPost, appServer.URL+"/api/spaces", map[string]any{
+		"name": "Vote table", "newapi_base_url": newAPIServer.URL, "admin_token": "admin-token", "quota_per_usd": 500_000,
+	}, http.StatusCreated, &created)
+	spacePath := appServer.URL + "/api/spaces/" + created.Space.ID
+	requestJSON(t, alice, http.MethodPost, spacePath+"/bind", map[string]string{"token": "alice-token"}, http.StatusOK, nil)
+
+	bobID := register(bob, "bob_vote", "Bob")
+	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/spaces/join", map[string]string{"invite_code": created.Space.InviteCode}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-token"}, http.StatusOK, nil)
+	carolID := register(carol, "carol_vote", "Carol")
+	requestJSON(t, carol, http.MethodPost, appServer.URL+"/api/spaces/join", map[string]string{"invite_code": created.Space.InviteCode}, http.StatusOK, nil)
+	requestJSON(t, carol, http.MethodPost, spacePath+"/bind", map[string]string{"token": "carol-token"}, http.StatusOK, nil)
+
+	for _, client := range []*http.Client{alice, bob, carol} {
+		requestJSON(t, client, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, nil)
+
+	var voteResponse tableEnvelope
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/kick-vote", map[string]any{
+		"action": "start", "target_user_id": carolID,
+	}, http.StatusOK, &voteResponse)
+	if voteResponse.KickVote == nil || voteResponse.KickVote.YesCount != 1 || voteResponse.KickVote.RequiredYes != 2 || voteResponse.KickVote.ViewerVote != "approve" {
+		t.Fatalf("unexpected initial kick vote: %#v", voteResponse.KickVote)
+	}
+	requestJSON(t, carol, http.MethodPost, spacePath+"/table/kick-vote", map[string]string{"action": "approve"}, http.StatusForbidden, nil)
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/kick-vote", map[string]string{"action": "approve"}, http.StatusConflict, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/kick-vote", map[string]string{"action": "reject"}, http.StatusOK, &voteResponse)
+	if voteResponse.KickVote != nil || voteResponse.Notice != "同意票不足，移出投票未通过" {
+		t.Fatalf("rejected vote should close without removing the player: %#v", voteResponse)
+	}
+
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/kick-vote", map[string]any{
+		"action": "start", "target_user_id": carolID,
+	}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/kick-vote", map[string]string{"action": "approve"}, http.StatusOK, &voteResponse)
+	if voteResponse.KickVote != nil || len(voteResponse.Table.Players) != 2 || !strings.Contains(voteResponse.Notice, "已将 Carol 移出") {
+		t.Fatalf("approved vote should remove and settle Carol: %#v", voteResponse)
+	}
+	for _, player := range voteResponse.Table.Players {
+		if player.UserID == carolID || player.Ready {
+			t.Fatalf("removed player must be gone and readiness must reset: %#v", voteResponse.Table.Players)
+		}
+	}
+	requestJSON(t, carol, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
+
+	upstream.mu.Lock()
+	carolQuota := upstream.quotas[3]
+	upstream.mu.Unlock()
+	if carolQuota != 100_000_000 {
+		t.Fatalf("vote kick must restore Carol's full buy-in, got quota %d", carolQuota)
+	}
+	var operations struct {
+		Operations []store.WalletOperation `json:"operations"`
+	}
+	requestJSON(t, carol, http.MethodGet, spacePath+"/operations", nil, http.StatusOK, &operations)
+	if len(operations.Operations) != 2 || operations.Operations[0].Kind != "cash_out" || operations.Operations[0].ActorUserID != aliceID || operations.Operations[0].Note != "经牌桌投票移出" {
+		t.Fatalf("vote kick cash-out audit is incomplete: %#v", operations.Operations)
+	}
+
+	requestJSON(t, alice, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/table/ready", map[string]any{}, http.StatusOK, &voteResponse)
+	if voteResponse.Table.Street != poker.StreetPreflop {
+		t.Fatalf("remaining players should be able to start after voting, got %s", voteResponse.Table.Street)
+	}
+	if aliceID == bobID || bobID == carolID {
+		t.Fatal("registered users must have distinct ids")
+	}
+}
+
 func TestCreateAndJoinSpaceAutomaticallyProvisionMembers(t *testing.T) {
 	var upstreamMu sync.Mutex
 	users := make(map[string]autoProvisionedUser)

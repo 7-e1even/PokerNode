@@ -42,6 +42,8 @@ type tableRuntime struct {
 	deleted     bool
 	timer       *time.Timer
 	timerTurnID uint64
+	kickVote    *kickVote
+	kickedUntil map[int64]time.Time
 }
 
 type apiError struct {
@@ -113,6 +115,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/leave", s.withUser(s.handleTableLeave))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/ready", s.withUser(s.handleTableReady))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/kick-vote", s.withUser(s.handleTableKickVote))
 	// Keep /start as a compatibility alias; it now records readiness rather than starting unilaterally.
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/start", s.withUser(s.handleTableReady))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/tables/{tableID}/action", s.withUser(s.handleTableAction))
@@ -122,6 +125,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/join", s.withUser(s.handleTableJoin))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/leave", s.withUser(s.handleTableLeave))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/ready", s.withUser(s.handleTableReady))
+	mux.HandleFunc("POST /api/spaces/{spaceID}/table/kick-vote", s.withUser(s.handleTableKickVote))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/start", s.withUser(s.handleTableReady))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/table/action", s.withUser(s.handleTableAction))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/ws", s.withUser(s.handleWebSocket))
