@@ -1,0 +1,828 @@
+package poker
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
+)
+
+const MaxSeats = 8
+
+type Street string
+
+const (
+	StreetWaiting  Street = "waiting"
+	StreetPreflop  Street = "preflop"
+	StreetFlop     Street = "flop"
+	StreetTurn     Street = "turn"
+	StreetRiver    Street = "river"
+	StreetComplete Street = "complete"
+)
+
+type ActionType string
+
+const (
+	ActionFold  ActionType = "fold"
+	ActionCheck ActionType = "check"
+	ActionCall  ActionType = "call"
+	ActionBet   ActionType = "bet"
+	ActionRaise ActionType = "raise"
+	ActionAllIn ActionType = "all_in"
+)
+
+var (
+	ErrTableFull      = errors.New("table is full")
+	ErrAlreadySeated  = errors.New("player is already seated")
+	ErrNotSeated      = errors.New("player is not seated")
+	ErrHandInProgress = errors.New("a hand is in progress")
+	ErrNotYourTurn    = errors.New("it is not your turn")
+)
+
+type Player struct {
+	UserID             int64      `json:"user_id"`
+	Name               string     `json:"name"`
+	Seat               int        `json:"seat"`
+	Stack              int64      `json:"stack_cents"`
+	Bet                int64      `json:"bet_cents"`
+	Committed          int64      `json:"committed_cents"`
+	Hole               []Card     `json:"hole,omitempty"`
+	InHand             bool       `json:"in_hand"`
+	Folded             bool       `json:"folded"`
+	AllIn              bool       `json:"all_in"`
+	LastAction         ActionType `json:"last_action,omitempty"`
+	LastActionAmount   int64      `json:"last_action_amount_cents,omitempty"`
+	LastActionBetLevel int        `json:"last_action_bet_level,omitempty"`
+}
+
+type HandResult struct {
+	HandID   int64           `json:"hand_id"`
+	Pot      int64           `json:"pot_cents"`
+	Message  string          `json:"message"`
+	Showdown bool            `json:"showdown"`
+	Payouts  map[int64]int64 `json:"payouts"`
+}
+
+type TableState struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	SmallBlind     int64             `json:"small_blind_cents"`
+	BigBlind       int64             `json:"big_blind_cents"`
+	HandID         int64             `json:"hand_id"`
+	Street         Street            `json:"street"`
+	Dealer         int               `json:"dealer"`
+	Acting         int               `json:"acting"`
+	CurrentBet     int64             `json:"current_bet_cents"`
+	MinRaise       int64             `json:"min_raise_cents"`
+	Board          []Card            `json:"board"`
+	Deck           []Card            `json:"deck"`
+	DeckPos        int               `json:"deck_pos"`
+	Seats          [MaxSeats]*Player `json:"seats"`
+	Acted          [MaxSeats]bool    `json:"acted"`
+	ActedAtBet     [MaxSeats]int64   `json:"acted_at_bet_cents"`
+	BetLevel       int               `json:"bet_level"`
+	SmallBlindSeat int               `json:"small_blind_seat"`
+	BigBlindSeat   int               `json:"big_blind_seat"`
+	PositionsSet   bool              `json:"positions_set,omitempty"`
+	LastResult     *HandResult       `json:"last_result,omitempty"`
+}
+
+type Table struct {
+	mu    sync.RWMutex
+	state TableState
+}
+
+type AllowedActions struct {
+	CanAct     bool  `json:"can_act"`
+	CanFold    bool  `json:"can_fold"`
+	CanCheck   bool  `json:"can_check"`
+	CanCall    bool  `json:"can_call"`
+	CanBet     bool  `json:"can_bet"`
+	CanRaise   bool  `json:"can_raise"`
+	CanAllIn   bool  `json:"can_all_in"`
+	ToCall     int64 `json:"to_call_cents"`
+	MinRaiseTo int64 `json:"min_raise_to_cents"`
+	MaxRaiseTo int64 `json:"max_raise_to_cents"`
+}
+
+type PlayerView struct {
+	UserID             int64      `json:"user_id"`
+	Name               string     `json:"name"`
+	Seat               int        `json:"seat"`
+	Stack              int64      `json:"stack_cents"`
+	Bet                int64      `json:"bet_cents"`
+	Cards              []Card     `json:"cards,omitempty"`
+	InHand             bool       `json:"in_hand"`
+	Folded             bool       `json:"folded"`
+	AllIn              bool       `json:"all_in"`
+	IsDealer           bool       `json:"is_dealer"`
+	IsActing           bool       `json:"is_acting"`
+	LastAction         ActionType `json:"last_action,omitempty"`
+	LastActionAmount   int64      `json:"last_action_amount_cents,omitempty"`
+	LastActionBetLevel int        `json:"last_action_bet_level,omitempty"`
+}
+
+type Snapshot struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	SmallBlind     int64          `json:"small_blind_cents"`
+	BigBlind       int64          `json:"big_blind_cents"`
+	HandID         int64          `json:"hand_id"`
+	Street         Street         `json:"street"`
+	Board          []Card         `json:"board"`
+	Pot            int64          `json:"pot_cents"`
+	CurrentBet     int64          `json:"current_bet_cents"`
+	BetLevel       int            `json:"bet_level"`
+	DealerSeat     int            `json:"dealer_seat"`
+	SmallBlindSeat int            `json:"small_blind_seat"`
+	BigBlindSeat   int            `json:"big_blind_seat"`
+	ActingSeat     int            `json:"acting_seat"`
+	ViewerSeat     int            `json:"viewer_seat"`
+	Players        []PlayerView   `json:"players"`
+	Allowed        AllowedActions `json:"allowed_actions"`
+	CanStart       bool           `json:"can_start"`
+	CanLeave       bool           `json:"can_leave"`
+	LastResult     *HandResult    `json:"last_result,omitempty"`
+}
+
+func NewTable(id, name string, smallBlind, bigBlind int64) *Table {
+	return &Table{state: TableState{
+		ID: id, Name: name, SmallBlind: smallBlind, BigBlind: bigBlind,
+		Street: StreetWaiting, Dealer: -1, Acting: -1, MinRaise: bigBlind,
+		SmallBlindSeat: -1, BigBlindSeat: -1,
+	}}
+}
+
+func RestoreTable(data []byte) (*Table, error) {
+	var state TableState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("decode table state: %w", err)
+	}
+	if state.ID == "" || state.SmallBlind <= 0 || state.BigBlind < state.SmallBlind {
+		return nil, errors.New("invalid persisted table state")
+	}
+	return &Table{state: state}, nil
+}
+
+func (t *Table) MarshalState() ([]byte, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return json.Marshal(t.state)
+}
+
+func (t *Table) Join(userID int64, name string, buyIn int64) (int, error) {
+	if userID <= 0 || name == "" || buyIn <= 0 {
+		return -1, errors.New("invalid player or buy-in")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.handActiveLocked() {
+		return -1, ErrHandInProgress
+	}
+	if t.seatForUserLocked(userID) >= 0 {
+		return -1, ErrAlreadySeated
+	}
+	for seat := range t.state.Seats {
+		if t.state.Seats[seat] == nil {
+			t.state.Seats[seat] = &Player{UserID: userID, Name: name, Seat: seat, Stack: buyIn}
+			return seat, nil
+		}
+	}
+	return -1, ErrTableFull
+}
+
+func (t *Table) Leave(userID int64) (int64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.handActiveLocked() {
+		return 0, ErrHandInProgress
+	}
+	seat := t.seatForUserLocked(userID)
+	if seat < 0 {
+		return 0, ErrNotSeated
+	}
+	stack := t.state.Seats[seat].Stack
+	t.state.Seats[seat] = nil
+	return stack, nil
+}
+
+func (t *Table) StartHand(userID int64) error {
+	deck, err := shuffledDeck()
+	if err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.startHandLocked(userID, deck)
+}
+
+func (t *Table) startHandLocked(userID int64, deck []Card) error {
+	if t.handActiveLocked() {
+		return ErrHandInProgress
+	}
+	if t.seatForUserLocked(userID) < 0 {
+		return ErrNotSeated
+	}
+	active := t.playableSeatsLocked()
+	if len(active) < 2 {
+		return errors.New("at least two funded players are required")
+	}
+	if len(deck) != 52 {
+		return errors.New("deck must contain 52 cards")
+	}
+
+	t.state.HandID++
+	t.state.Street = StreetPreflop
+	t.state.Board = nil
+	t.state.Deck = append([]Card(nil), deck...)
+	t.state.DeckPos = 0
+	t.state.CurrentBet = 0
+	t.state.MinRaise = t.state.BigBlind
+	t.state.BetLevel = 1
+	t.state.LastResult = nil
+	t.state.Acted = [MaxSeats]bool{}
+	t.state.ActedAtBet = [MaxSeats]int64{}
+	t.state.Dealer = t.nextPlayableSeatLocked(t.state.Dealer)
+
+	for _, seat := range active {
+		player := t.state.Seats[seat]
+		player.Bet = 0
+		player.Committed = 0
+		player.Hole = nil
+		player.InHand = true
+		player.Folded = false
+		player.AllIn = false
+		player.LastAction = ""
+		player.LastActionAmount = 0
+		player.LastActionBetLevel = 0
+	}
+
+	for round := 0; round < 2; round++ {
+		seat := t.nextInHandSeatLocked(t.state.Dealer)
+		for dealt := 0; dealt < len(active); dealt++ {
+			player := t.state.Seats[seat]
+			player.Hole = append(player.Hole, t.drawLocked())
+			seat = t.nextInHandSeatLocked(seat)
+		}
+	}
+
+	smallBlindSeat := t.nextInHandSeatLocked(t.state.Dealer)
+	if len(active) == 2 {
+		smallBlindSeat = t.state.Dealer
+	}
+	bigBlindSeat := t.nextInHandSeatLocked(smallBlindSeat)
+	t.state.SmallBlindSeat = smallBlindSeat
+	t.state.BigBlindSeat = bigBlindSeat
+	t.state.PositionsSet = true
+	t.commitLocked(smallBlindSeat, t.state.SmallBlind)
+	t.commitLocked(bigBlindSeat, t.state.BigBlind)
+	t.state.CurrentBet = max(t.state.Seats[smallBlindSeat].Bet, t.state.Seats[bigBlindSeat].Bet)
+	t.state.Acting = t.nextNeedingActionLocked(bigBlindSeat)
+	if t.state.Acting < 0 {
+		t.advanceStreetLocked()
+	}
+	return nil
+}
+
+func (t *Table) Act(userID int64, action ActionType, amount int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seat := t.seatForUserLocked(userID)
+	if seat < 0 {
+		return ErrNotSeated
+	}
+	if !t.handActiveLocked() {
+		return errors.New("no active hand")
+	}
+	if seat != t.state.Acting {
+		return ErrNotYourTurn
+	}
+	player := t.state.Seats[seat]
+	toCall := max(0, t.state.CurrentBet-player.Bet)
+	betBefore := player.Bet
+	currentBetBefore := t.state.CurrentBet
+
+	switch action {
+	case ActionFold:
+		player.Folded = true
+		t.state.Acted[seat] = true
+	case ActionCheck:
+		if toCall != 0 {
+			return errors.New("cannot check while facing a bet")
+		}
+		t.state.Acted[seat] = true
+	case ActionCall:
+		if toCall == 0 {
+			return errors.New("nothing to call")
+		}
+		t.commitLocked(seat, toCall)
+		t.state.Acted[seat] = true
+	case ActionBet:
+		if t.state.CurrentBet != 0 {
+			return errors.New("use raise while facing a bet")
+		}
+		if err := t.raiseToLocked(seat, amount); err != nil {
+			return err
+		}
+	case ActionRaise:
+		if t.state.CurrentBet == 0 {
+			return errors.New("use bet when no wager exists")
+		}
+		if err := t.raiseToLocked(seat, amount); err != nil {
+			return err
+		}
+	case ActionAllIn:
+		if player.Stack <= 0 {
+			return errors.New("player is already all-in")
+		}
+		target := player.Bet + player.Stack
+		if target <= t.state.CurrentBet {
+			t.commitLocked(seat, player.Stack)
+			t.state.Acted[seat] = true
+		} else if err := t.raiseToLocked(seat, target); err != nil {
+			return err
+		}
+	default:
+		return errors.New("unknown action")
+	}
+	player.LastAction = action
+	player.LastActionAmount = player.Bet - betBefore
+	player.LastActionBetLevel = 0
+	if player.Bet > currentBetBefore {
+		player.LastActionBetLevel = t.state.BetLevel
+	}
+	t.state.ActedAtBet[seat] = t.state.CurrentBet
+
+	if t.remainingPlayersLocked() == 1 {
+		t.finishUncontestedLocked()
+		return nil
+	}
+	if t.bettingRoundCompleteLocked() {
+		t.advanceStreetLocked()
+		return nil
+	}
+	t.state.Acting = t.nextNeedingActionLocked(seat)
+	if t.state.Acting < 0 {
+		t.advanceStreetLocked()
+	}
+	return nil
+}
+
+func (t *Table) Snapshot(viewerID int64) Snapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	viewerSeat := t.seatForUserLocked(viewerID)
+	smallBlindSeat, bigBlindSeat := t.blindSeatsLocked()
+	players := make([]PlayerView, 0, MaxSeats)
+	for seat, player := range t.state.Seats {
+		if player == nil {
+			continue
+		}
+		view := PlayerView{
+			UserID: player.UserID, Name: player.Name, Seat: seat, Stack: player.Stack,
+			Bet: player.Bet, InHand: player.InHand, Folded: player.Folded, AllIn: player.AllIn,
+			IsDealer: seat == t.state.Dealer, IsActing: seat == t.state.Acting,
+			LastAction: player.LastAction, LastActionAmount: player.LastActionAmount,
+			LastActionBetLevel: player.LastActionBetLevel,
+		}
+		showdown := t.state.LastResult != nil && t.state.LastResult.Showdown && !player.Folded
+		if player.UserID == viewerID || showdown {
+			view.Cards = append([]Card(nil), player.Hole...)
+		}
+		players = append(players, view)
+	}
+	return Snapshot{
+		ID: t.state.ID, Name: t.state.Name, SmallBlind: t.state.SmallBlind, BigBlind: t.state.BigBlind,
+		HandID: t.state.HandID, Street: t.state.Street, Board: append([]Card(nil), t.state.Board...),
+		Pot: t.potLocked(), CurrentBet: t.state.CurrentBet, BetLevel: t.state.BetLevel,
+		DealerSeat: t.state.Dealer, SmallBlindSeat: smallBlindSeat, BigBlindSeat: bigBlindSeat,
+		ActingSeat: t.state.Acting, ViewerSeat: viewerSeat, Players: players,
+		Allowed: t.allowedActionsLocked(viewerID), CanStart: viewerSeat >= 0 && !t.handActiveLocked() && len(t.playableSeatsLocked()) >= 2,
+		CanLeave: viewerSeat >= 0 && !t.handActiveLocked(), LastResult: cloneResult(t.state.LastResult),
+	}
+}
+
+func (t *Table) IsSeated(userID int64) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.seatForUserLocked(userID) >= 0
+}
+
+func (t *Table) StackFor(userID int64) (int64, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	seat := t.seatForUserLocked(userID)
+	if seat < 0 {
+		return 0, false
+	}
+	return t.state.Seats[seat].Stack, true
+}
+
+func (t *Table) raiseToLocked(seat int, target int64) error {
+	player := t.state.Seats[seat]
+	maximum := player.Bet + player.Stack
+	if target <= t.state.CurrentBet || target > maximum {
+		return errors.New("raise amount is outside the allowed range")
+	}
+	if !t.raiseReopenedLocked(seat) {
+		return errors.New("betting was not reopened by the incomplete all-in raise")
+	}
+	raiseSize := target - t.state.CurrentBet
+	isAllIn := target == maximum
+	minimum := t.state.MinRaise
+	if t.state.CurrentBet == 0 {
+		minimum = t.state.BigBlind
+	}
+	if raiseSize < minimum && !isAllIn {
+		return fmt.Errorf("minimum raise is %d cents", minimum)
+	}
+	oldCurrent := t.state.CurrentBet
+	t.commitLocked(seat, target-player.Bet)
+	t.state.CurrentBet = target
+	fullRaise := target-oldCurrent >= minimum
+	if fullRaise {
+		t.state.BetLevel++
+		t.state.MinRaise = target - oldCurrent
+		for other, candidate := range t.state.Seats {
+			if candidate != nil && candidate.InHand && !candidate.Folded && !candidate.AllIn {
+				t.state.Acted[other] = false
+			}
+		}
+	}
+	t.state.Acted[seat] = true
+	return nil
+}
+
+func (t *Table) commitLocked(seat int, requested int64) int64 {
+	player := t.state.Seats[seat]
+	amount := min(requested, player.Stack)
+	player.Stack -= amount
+	player.Bet += amount
+	player.Committed += amount
+	if player.Stack == 0 {
+		player.AllIn = true
+	}
+	return amount
+}
+
+func (t *Table) advanceStreetLocked() {
+	for _, player := range t.state.Seats {
+		if player != nil {
+			player.Bet = 0
+		}
+	}
+	t.state.CurrentBet = 0
+	t.state.MinRaise = t.state.BigBlind
+	t.state.Acted = [MaxSeats]bool{}
+	t.state.ActedAtBet = [MaxSeats]int64{}
+
+	switch t.state.Street {
+	case StreetPreflop:
+		t.dealNextBoardLocked()
+		t.state.Street = StreetFlop
+	case StreetFlop:
+		t.dealNextBoardLocked()
+		t.state.Street = StreetTurn
+	case StreetTurn:
+		t.dealNextBoardLocked()
+		t.state.Street = StreetRiver
+	case StreetRiver:
+		t.finishShowdownLocked()
+		return
+	default:
+		return
+	}
+	t.state.BetLevel = 0
+	for _, player := range t.state.Seats {
+		if player != nil {
+			player.LastAction = ""
+			player.LastActionAmount = 0
+			player.LastActionBetLevel = 0
+		}
+	}
+
+	if t.actionablePlayersLocked() <= 1 {
+		for len(t.state.Board) < 5 {
+			t.dealNextBoardLocked()
+		}
+		t.finishShowdownLocked()
+		return
+	}
+	t.state.Acting = t.nextNeedingActionLocked(t.state.Dealer)
+	if t.state.Acting < 0 {
+		for len(t.state.Board) < 5 {
+			t.dealNextBoardLocked()
+		}
+		t.finishShowdownLocked()
+	}
+}
+
+func (t *Table) blindSeatsLocked() (int, int) {
+	if t.state.PositionsSet {
+		return t.state.SmallBlindSeat, t.state.BigBlindSeat
+	}
+	if !t.handActiveLocked() || t.state.Dealer < 0 {
+		return -1, -1
+	}
+	smallBlindSeat := t.nextInHandSeatLocked(t.state.Dealer)
+	if t.remainingPlayersLocked() == 2 {
+		smallBlindSeat = t.state.Dealer
+	}
+	return smallBlindSeat, t.nextInHandSeatLocked(smallBlindSeat)
+}
+
+func (t *Table) finishUncontestedLocked() {
+	pot := t.potLocked()
+	for _, player := range t.state.Seats {
+		if player != nil && player.InHand && !player.Folded {
+			player.Stack += pot
+			t.state.LastResult = &HandResult{HandID: t.state.HandID, Pot: pot, Message: player.Name + " wins", Payouts: map[int64]int64{player.UserID: pot}}
+			break
+		}
+	}
+	t.finishHandLocked()
+}
+
+func (t *Table) finishShowdownLocked() {
+	pot := t.potLocked()
+	payouts := t.awardSidePotsLocked()
+	winnerNames := make([]string, 0, len(payouts))
+	for userID, amount := range payouts {
+		for _, player := range t.state.Seats {
+			if player != nil && player.UserID == userID {
+				player.Stack += amount
+				winnerNames = append(winnerNames, player.Name)
+				break
+			}
+		}
+	}
+	sort.Strings(winnerNames)
+	message := "Showdown"
+	if len(winnerNames) > 0 {
+		message = fmt.Sprintf("%s win at showdown", joinNames(winnerNames))
+	}
+	t.state.LastResult = &HandResult{HandID: t.state.HandID, Pot: pot, Message: message, Showdown: true, Payouts: payouts}
+	t.finishHandLocked()
+}
+
+func (t *Table) awardSidePotsLocked() map[int64]int64 {
+	levels := make([]int64, 0, MaxSeats)
+	seen := map[int64]bool{}
+	for _, player := range t.state.Seats {
+		if player != nil && player.Committed > 0 && !seen[player.Committed] {
+			seen[player.Committed] = true
+			levels = append(levels, player.Committed)
+		}
+	}
+	sort.Slice(levels, func(i, j int) bool { return levels[i] < levels[j] })
+	payouts := make(map[int64]int64)
+	previous := int64(0)
+	for _, level := range levels {
+		contributors := 0
+		eligible := make([]int, 0, MaxSeats)
+		for seat, player := range t.state.Seats {
+			if player == nil || player.Committed < level {
+				continue
+			}
+			contributors++
+			if player.InHand && !player.Folded {
+				eligible = append(eligible, seat)
+			}
+		}
+		amount := (level - previous) * int64(contributors)
+		previous = level
+		if amount == 0 || len(eligible) == 0 {
+			continue
+		}
+		best := uint64(0)
+		winners := make([]int, 0, len(eligible))
+		for _, seat := range eligible {
+			player := t.state.Seats[seat]
+			cards := append(append([]Card(nil), player.Hole...), t.state.Board...)
+			score := Evaluate(cards).Score
+			switch {
+			case score > best:
+				best = score
+				winners = []int{seat}
+			case score == best:
+				winners = append(winners, seat)
+			}
+		}
+		share := amount / int64(len(winners))
+		remainder := amount % int64(len(winners))
+		sort.Slice(winners, func(i, j int) bool {
+			return seatDistanceLeftOfButton(t.state.Dealer, winners[i]) < seatDistanceLeftOfButton(t.state.Dealer, winners[j])
+		})
+		for _, seat := range winners {
+			award := share
+			if remainder > 0 {
+				award++
+				remainder--
+			}
+			payouts[t.state.Seats[seat].UserID] += award
+		}
+	}
+	return payouts
+}
+
+func (t *Table) finishHandLocked() {
+	for _, player := range t.state.Seats {
+		if player == nil {
+			continue
+		}
+		player.Bet = 0
+		player.Committed = 0
+		player.InHand = false
+		player.AllIn = false
+	}
+	t.state.CurrentBet = 0
+	t.state.Acting = -1
+	t.state.Street = StreetComplete
+	t.state.Acted = [MaxSeats]bool{}
+	t.state.ActedAtBet = [MaxSeats]int64{}
+}
+
+func (t *Table) allowedActionsLocked(userID int64) AllowedActions {
+	seat := t.seatForUserLocked(userID)
+	if seat < 0 || seat != t.state.Acting || !t.handActiveLocked() {
+		return AllowedActions{}
+	}
+	player := t.state.Seats[seat]
+	toCall := max(0, t.state.CurrentBet-player.Bet)
+	maximum := player.Bet + player.Stack
+	minimum := t.state.CurrentBet + t.state.MinRaise
+	if t.state.CurrentBet == 0 {
+		minimum = t.state.BigBlind
+	}
+	minimum = min(minimum, maximum)
+	raiseReopened := t.raiseReopenedLocked(seat)
+	return AllowedActions{
+		CanAct: true, CanFold: true, CanCheck: toCall == 0, CanCall: toCall > 0,
+		CanBet:   t.state.CurrentBet == 0 && player.Stack > 0,
+		CanRaise: t.state.CurrentBet > 0 && maximum > t.state.CurrentBet && raiseReopened,
+		CanAllIn: player.Stack > 0 && (maximum <= t.state.CurrentBet || raiseReopened), ToCall: min(toCall, player.Stack),
+		MinRaiseTo: minimum, MaxRaiseTo: maximum,
+	}
+}
+
+func (t *Table) raiseReopenedLocked(seat int) bool {
+	if !t.state.Acted[seat] {
+		return true
+	}
+	return t.state.CurrentBet-t.state.ActedAtBet[seat] >= t.state.MinRaise
+}
+
+func (t *Table) bettingRoundCompleteLocked() bool {
+	for seat, player := range t.state.Seats {
+		if player == nil || !player.InHand || player.Folded || player.AllIn {
+			continue
+		}
+		if !t.state.Acted[seat] || player.Bet != t.state.CurrentBet {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *Table) nextNeedingActionLocked(from int) int {
+	for offset := 1; offset <= MaxSeats; offset++ {
+		seat := (from + offset + MaxSeats) % MaxSeats
+		player := t.state.Seats[seat]
+		if player == nil || !player.InHand || player.Folded || player.AllIn {
+			continue
+		}
+		if !t.state.Acted[seat] || player.Bet != t.state.CurrentBet {
+			return seat
+		}
+	}
+	return -1
+}
+
+func (t *Table) nextPlayableSeatLocked(from int) int {
+	for offset := 1; offset <= MaxSeats; offset++ {
+		seat := (from + offset + MaxSeats) % MaxSeats
+		if player := t.state.Seats[seat]; player != nil && player.Stack > 0 {
+			return seat
+		}
+	}
+	return -1
+}
+
+func (t *Table) nextInHandSeatLocked(from int) int {
+	for offset := 1; offset <= MaxSeats; offset++ {
+		seat := (from + offset + MaxSeats) % MaxSeats
+		if player := t.state.Seats[seat]; player != nil && player.InHand && !player.Folded {
+			return seat
+		}
+	}
+	return -1
+}
+
+func (t *Table) playableSeatsLocked() []int {
+	seats := make([]int, 0, MaxSeats)
+	for seat, player := range t.state.Seats {
+		if player != nil && player.Stack > 0 {
+			seats = append(seats, seat)
+		}
+	}
+	return seats
+}
+
+func (t *Table) seatForUserLocked(userID int64) int {
+	for seat, player := range t.state.Seats {
+		if player != nil && player.UserID == userID {
+			return seat
+		}
+	}
+	return -1
+}
+
+func (t *Table) handActiveLocked() bool {
+	return t.state.Street == StreetPreflop || t.state.Street == StreetFlop || t.state.Street == StreetTurn || t.state.Street == StreetRiver
+}
+
+func (t *Table) remainingPlayersLocked() int {
+	count := 0
+	for _, player := range t.state.Seats {
+		if player != nil && player.InHand && !player.Folded {
+			count++
+		}
+	}
+	return count
+}
+
+func (t *Table) actionablePlayersLocked() int {
+	count := 0
+	for _, player := range t.state.Seats {
+		if player != nil && player.InHand && !player.Folded && !player.AllIn {
+			count++
+		}
+	}
+	return count
+}
+
+func (t *Table) potLocked() int64 {
+	var pot int64
+	for _, player := range t.state.Seats {
+		if player != nil {
+			pot += player.Committed
+		}
+	}
+	return pot
+}
+
+func (t *Table) drawLocked() Card {
+	card := t.state.Deck[t.state.DeckPos]
+	t.state.DeckPos++
+	return card
+}
+
+func (t *Table) drawBoardLocked(count int) {
+	for i := 0; i < count; i++ {
+		t.state.Board = append(t.state.Board, t.drawLocked())
+	}
+}
+
+func (t *Table) dealNextBoardLocked() {
+	t.state.DeckPos++ // burn one card before the flop, turn, and river
+	count := 1
+	if len(t.state.Board) == 0 {
+		count = 3
+	}
+	t.drawBoardLocked(count)
+}
+
+func cloneResult(result *HandResult) *HandResult {
+	if result == nil {
+		return nil
+	}
+	clone := *result
+	clone.Payouts = make(map[int64]int64, len(result.Payouts))
+	for userID, amount := range result.Payouts {
+		clone.Payouts[userID] = amount
+	}
+	return &clone
+}
+
+func seatDistanceLeftOfButton(button, seat int) int {
+	distance := (seat - button + MaxSeats) % MaxSeats
+	if distance == 0 {
+		return MaxSeats
+	}
+	return distance
+}
+
+func joinNames(names []string) string {
+	if len(names) == 1 {
+		return names[0]
+	}
+	result := ""
+	for i, name := range names {
+		if i > 0 {
+			result += " & "
+		}
+		result += name
+	}
+	return result
+}

@@ -1,0 +1,18 @@
+services:
+  pokernode:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      POKERNODE_SESSION_SECRET: ${POKERNODE_SESSION_SECRET:?set POKERNODE_SESSION_SECRET in .env}
+      POKERNODE_ENCRYPTION_KEY: ${POKERNODE_ENCRYPTION_KEY:?set POKERNODE_ENCRYPTION_KEY in .env}
+      WECHAT_APP_ID: ${WECHAT_APP_ID:-}
+      WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+      WECHAT_REDIRECT_URI: ${WECHAT_REDIRECT_URI:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

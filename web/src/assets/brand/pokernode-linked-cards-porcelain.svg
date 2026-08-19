@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">PokerNode linked cards logo — porcelain</title>
+  <desc id="desc">Two indigo playing cards with red, amber, and blue connected nodes on a porcelain background</desc>
+  <defs>
+    <linearGradient id="porcelain-background" x1="8" y1="7" x2="56" y2="57" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF4E4"/>
+      <stop offset="1" stop-color="#E8E6F7"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="17" fill="url(#porcelain-background)" stroke="#D9D4E8" stroke-width="2"/>
+  <g fill="none" stroke="#2F3768" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+    <path d="M16.5 20.5 34 16.8a5 5 0 0 1 5.9 3.9l4 18.8a5 5 0 0 1-3.9 5.9l-17.5 3.8a5 5 0 0 1-5.9-3.9l-4-18.8a5 5 0 0 1 3.9-6Z"/>
+    <path d="M29.5 15.2 47 19a5 5 0 0 1 3.9 5.9l-4 18.8a5 5 0 0 1-5.9 3.9"/>
+  </g>
+  <path d="m24 31 7-4 7 6" fill="none" stroke="#C88716" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+  <circle cx="24" cy="31" r="3" fill="#D95757"/>
+  <circle cx="31" cy="27" r="3" fill="#D99C20"/>
+  <circle cx="38" cy="33" r="3" fill="#4777C8"/>
+</svg>

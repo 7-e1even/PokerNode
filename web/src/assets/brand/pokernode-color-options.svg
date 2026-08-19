@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 824 232" role="img" aria-labelledby="title desc">
+  <title id="title">PokerNode logo color options</title>
+  <desc id="desc">Four PokerNode linked-card logo color directions: deep indigo, electric cobalt, dusk plum, and porcelain</desc>
+  <defs>
+    <linearGradient id="option-indigo" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#37346F"/>
+      <stop offset="1" stop-color="#182A46"/>
+    </linearGradient>
+    <linearGradient id="option-cobalt" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#246FDB"/>
+      <stop offset="1" stop-color="#213A72"/>
+    </linearGradient>
+    <linearGradient id="option-plum" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#70405F"/>
+      <stop offset="1" stop-color="#30284F"/>
+    </linearGradient>
+    <linearGradient id="option-porcelain" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FFF4E4"/>
+      <stop offset="1" stop-color="#E8E6F7"/>
+    </linearGradient>
+    <filter id="panel-shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#20243B" flood-opacity=".08"/>
+    </filter>
+  </defs>
+
+  <rect width="824" height="232" rx="24" fill="#F5F6F9"/>
+
+  <g filter="url(#panel-shadow)">
+    <rect x="16" y="16" width="186" height="200" rx="18" fill="#FFFFFF"/>
+    <rect x="218" y="16" width="186" height="200" rx="18" fill="#FFFFFF"/>
+    <rect x="420" y="16" width="186" height="200" rx="18" fill="#FFFFFF"/>
+    <rect x="622" y="16" width="186" height="200" rx="18" fill="#FFFFFF"/>
+  </g>
+
+  <g transform="translate(57 34) scale(1.625)">
+    <rect width="64" height="64" rx="18" fill="url(#option-indigo)"/>
+    <g fill="none" stroke="#F7F2E8" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+      <path d="M16.5 20.5 34 16.8a5 5 0 0 1 5.9 3.9l4 18.8a5 5 0 0 1-3.9 5.9l-17.5 3.8a5 5 0 0 1-5.9-3.9l-4-18.8a5 5 0 0 1 3.9-6Z"/>
+      <path d="M29.5 15.2 47 19a5 5 0 0 1 3.9 5.9l-4 18.8a5 5 0 0 1-5.9 3.9"/>
+    </g>
+    <path d="m24 31 7-4 7 6" fill="none" stroke="#F4C95D" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+    <circle cx="24" cy="31" r="3" fill="#FF6B6B"/><circle cx="31" cy="27" r="3" fill="#F4C95D"/><circle cx="38" cy="33" r="3" fill="#67D5EA"/>
+  </g>
+
+  <g transform="translate(259 34) scale(1.625)">
+    <rect width="64" height="64" rx="18" fill="url(#option-cobalt)"/>
+    <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+      <path d="M16.5 20.5 34 16.8a5 5 0 0 1 5.9 3.9l4 18.8a5 5 0 0 1-3.9 5.9l-17.5 3.8a5 5 0 0 1-5.9-3.9l-4-18.8a5 5 0 0 1 3.9-6Z"/>
+      <path d="M29.5 15.2 47 19a5 5 0 0 1 3.9 5.9l-4 18.8a5 5 0 0 1-5.9 3.9"/>
+    </g>
+    <path d="m24 31 7-4 7 6" fill="none" stroke="#FFD166" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+    <circle cx="24" cy="31" r="3" fill="#FF8A4C"/><circle cx="31" cy="27" r="3" fill="#FFD166"/><circle cx="38" cy="33" r="3" fill="#80E1FF"/>
+  </g>
+
+  <g transform="translate(461 34) scale(1.625)">
+    <rect width="64" height="64" rx="18" fill="url(#option-plum)"/>
+    <g fill="none" stroke="#FFF4E8" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+      <path d="M16.5 20.5 34 16.8a5 5 0 0 1 5.9 3.9l4 18.8a5 5 0 0 1-3.9 5.9l-17.5 3.8a5 5 0 0 1-5.9-3.9l-4-18.8a5 5 0 0 1 3.9-6Z"/>
+      <path d="M29.5 15.2 47 19a5 5 0 0 1 3.9 5.9l-4 18.8a5 5 0 0 1-5.9 3.9"/>
+    </g>
+    <path d="m24 31 7-4 7 6" fill="none" stroke="#FFBE7A" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+    <circle cx="24" cy="31" r="3" fill="#FF719A"/><circle cx="31" cy="27" r="3" fill="#FFBE7A"/><circle cx="38" cy="33" r="3" fill="#A8B8FF"/>
+  </g>
+
+  <g transform="translate(663 34) scale(1.625)">
+    <rect x=".6" y=".6" width="62.8" height="62.8" rx="17.4" fill="url(#option-porcelain)" stroke="#D9D4E8" stroke-width="1.2"/>
+    <g fill="none" stroke="#2F3768" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+      <path d="M16.5 20.5 34 16.8a5 5 0 0 1 5.9 3.9l4 18.8a5 5 0 0 1-3.9 5.9l-17.5 3.8a5 5 0 0 1-5.9-3.9l-4-18.8a5 5 0 0 1 3.9-6Z"/>
+      <path d="M29.5 15.2 47 19a5 5 0 0 1 3.9 5.9l-4 18.8a5 5 0 0 1-5.9 3.9"/>
+    </g>
+    <path d="m24 31 7-4 7 6" fill="none" stroke="#C88716" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+    <circle cx="24" cy="31" r="3" fill="#D95757"/><circle cx="31" cy="27" r="3" fill="#D99C20"/><circle cx="38" cy="33" r="3" fill="#4777C8"/>
+  </g>
+
+  <g fill="#20243B" font-family="Arial, sans-serif" text-anchor="middle">
+    <text x="109" y="165" font-size="16" font-weight="700">A · INDIGO</text>
+    <text x="109" y="188" font-size="12" fill="#6A7080">quiet · modern</text>
+    <text x="311" y="165" font-size="16" font-weight="700">B · COBALT</text>
+    <text x="311" y="188" font-size="12" fill="#6A7080">clear · energetic</text>
+    <text x="513" y="165" font-size="16" font-weight="700">C · PLUM</text>
+    <text x="513" y="188" font-size="12" fill="#6A7080">warm · premium</text>
+    <text x="715" y="165" font-size="16" font-weight="700">D · PORCELAIN</text>
+    <text x="715" y="188" font-size="12" fill="#6A7080">light · friendly</text>
+  </g>
+</svg>
