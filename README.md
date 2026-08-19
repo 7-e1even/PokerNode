@@ -27,8 +27,8 @@ _演示账号、频道名称和账户余额已脱敏。_
 
 1. 创建环境文件：
 
-   ```powershell
-   Copy-Item .env.example .env
+   ```bash
+   cp .env.example .env
    ```
 
 2. 至少填写以下三项：
@@ -43,15 +43,15 @@ _演示账号、频道名称和账户余额已脱敏。_
 
 3. 启动并检查：
 
-   ```powershell
+   ```bash
    docker compose up -d
    docker compose ps
-   Invoke-RestMethod http://localhost:8080/readyz
+   curl http://localhost:8080/readyz
    ```
 
 打开 [http://localhost:8080](http://localhost:8080)。升级时运行：
 
-```powershell
+```bash
 docker compose pull
 docker compose up -d
 ```
@@ -78,27 +78,6 @@ WECHAT_REDIRECT_URI=https://你的域名/api/auth/wechat/callback
 ```
 
 不设置时，账号密码登录仍可正常使用。
-
-## 本地开发
-
-需要 Go 1.25、Node.js 24 和 pnpm。Windows 可直接运行：
-
-```powershell
-.\start-dev.bat
-```
-
-常用检查：
-
-```powershell
-go test ./...
-pnpm --dir web build
-```
-
-从当前源码构建 Docker 镜像：
-
-```powershell
-docker compose -f compose.yaml -f compose.build.yaml up -d --build
-```
 
 ## 生产提醒
 
