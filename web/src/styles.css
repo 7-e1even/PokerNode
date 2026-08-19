@@ -889,6 +889,19 @@
   }
 }
 
+/* Keep horizontal-seat action labels clear of community cards on phones. */
+@media (max-width: 40rem) {
+  .poker-seat[data-horizontal-edge="true"] .poker-seat-action {
+    top: calc(100% + 0.35rem);
+    right: auto;
+    bottom: auto;
+    left: 50%;
+    margin: 0;
+    translate: -50% 0;
+    transform: none;
+  }
+}
+
 /* Utilities intentionally win inside Tailwind layers. These extreme landscape
    overrides stay unlayered so the compact side controls can replace them. */
 @media (max-width: 48rem) and (max-height: 28rem) and (orientation: landscape) {

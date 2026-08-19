@@ -538,6 +538,7 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: 
       className={cn("poker-seat absolute z-10 -translate-x-1/2 -translate-y-1/2", player.folded && "opacity-45")}
       data-seat={player.seat}
       data-visual-index={layout.index}
+      data-horizontal-edge={x <= 15 || x >= 85 ? "true" : undefined}
       style={{ "--poker-seat-x": `${x}%`, "--poker-seat-y": `${y}%` } as CSSProperties}
     >
       {player.cards && player.cards.length > 0 && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2">{player.cards.map((card, index) => <PlayingCard card={card} dealIndex={holeCardDealIndex(table, player.seat, index)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-${index}-${card.rank}-${card.suit}`} />)}</div>}
@@ -562,7 +563,7 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: 
         </CardContent>
       </Card>
       {(action || player.bet_cents > 0) && (
-        <Badge variant={player.is_acting ? "outline" : "secondary"} className={cn("absolute max-w-40 truncate bg-background shadow-sm", seatBetClass(x, y))}>
+        <Badge variant={player.is_acting ? "outline" : "secondary"} className={cn("poker-seat-action absolute max-w-40 truncate bg-background shadow-sm", seatBetClass(x, y))}>
           {action}{action && player.bet_cents > 0 ? " · " : ""}{player.bet_cents > 0 ? money(player.bet_cents) : ""}
         </Badge>
       )}
