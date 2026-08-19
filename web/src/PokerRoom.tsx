@@ -538,19 +538,19 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown }: { layout: 
       className={cn("poker-seat absolute z-10 -translate-x-1/2 -translate-y-1/2", player.folded && "opacity-45")}
       data-seat={player.seat}
       data-visual-index={layout.index}
-      style={{ left: `${x}%`, top: `${y}%` }}
+      style={{ "--poker-seat-x": `${x}%`, "--poker-seat-y": `${y}%` } as CSSProperties}
     >
       {player.cards && player.cards.length > 0 && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2">{player.cards.map((card, index) => <PlayingCard card={card} dealIndex={holeCardDealIndex(table, player.seat, index)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-${index}-${card.rank}-${card.suit}`} />)}</div>}
       {!player.cards && player.in_hand && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2"><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 0)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-0`} /><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 1)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-1`} /></div>}
-      <Card size="sm" className="poker-seat-card relative w-34 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm md:w-max md:min-w-42 md:max-w-54" data-acting={player.is_acting ? "true" : undefined}>
+      <Card size="sm" className="poker-seat-card relative w-38 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm md:w-max md:min-w-42 md:max-w-54" data-acting={player.is_acting ? "true" : undefined}>
         {isWinner && showWinnerCrown && <span className="poker-winner-crown absolute -top-4 left-1/2 grid size-7 -translate-x-1/2 place-items-center rounded-full bg-winner text-winner-foreground shadow-md" role="img" aria-label="本手赢家"><Crown aria-hidden="true" /></span>}
-        <CardContent className="flex items-center gap-2 px-2">
-          <Avatar className="size-9 md:size-10">
+        <CardContent className="flex items-center gap-1.5 px-2 md:gap-2">
+          <Avatar className="size-8 md:size-10">
             <AvatarFallback>{player.name.slice(0, 2).toUpperCase()}</AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1">
-              <strong className="min-w-0 flex-1 truncate text-sm">{player.name}{isViewer ? "（你）" : ""}</strong>
+              <strong className="min-w-0 flex-1 truncate text-sm">{player.name}{isViewer && <span className="hidden sm:inline">（你）</span>}</strong>
               {positions.length > 0 && (
                 <Badge variant={positions.some((position) => position.code === "BTN") ? "default" : "outline"} className="h-4 shrink-0 px-1 text-[0.5rem] md:h-5 md:px-1.5 md:text-[0.625rem]" aria-label={positions.map((position) => position.label).join("、")}>
                   {positions.map((position) => position.code).join("/")}

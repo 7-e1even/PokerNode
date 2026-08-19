@@ -11,8 +11,9 @@
 - New API 身份验证、余额读取、买入扣款、离桌结算
 - 频道主可调整本频道成员余额；平台管理员可跨频道管理，所有人工调整记录操作者与原因
 - 8-max No-Limit Hold'em：盲注、四轮下注、全下、边池、摊牌与牌型比较
+- 全员准备后自动开始下一手；开桌时可设置 5–300 秒行动时限，超时由服务端自动过牌或弃牌
 - 每张牌桌独立状态与资金流水，PostgreSQL 持久化，WebSocket 个性化实时视图
-- React + Vite + Tailwind CSS + shadcn/ui（Radix Nova）响应式界面
+- React + Vite + Tailwind CSS + shadcn/ui（Radix Nova）响应式界面，适配桌面、小窗口、平板和手机牌桌
 - 资金操作日志；上游结果不确定时进入人工核对，不盲目重试
 
 PokerNode 里的 `$` 是 New API quota 换算后的显示单位，不是银行卡资金或法币支付。默认换算为 `500,000 quota = $1.00`，频道管理员可修改。
@@ -22,6 +23,12 @@ PokerNode 里的 `$` 是 New API quota 换算后的显示单位，不是银行�
 玩家大厅与运营后台使用独立页面和登录入口。后台登录地址为 `/admin/login`，运营路由包括 `/admin`、`/admin/users`、`/admin/channels`、`/admin/balances`、`/admin/settings`；玩家侧使用 `/channels/:channelID`、`/channels/:channelID/balances` 和 `/channels/:channelID/tables/:tableID`。直接访问或刷新这些地址不会丢失当前位置。
 
 德州扑克规则基线、随机性说明和专业边界见 [`docs/POKER_RULES.md`](docs/POKER_RULES.md)。
+
+## 界面预览
+
+![PokerNode 四人演示牌局](docs/assets/pokernode-table-demo.png)
+
+演示账号、频道名称和账户余额均已脱敏。图中展示了多人下注记录、服务端行动倒计时与当前行动玩家状态。
 
 ## 一键部署：GHCR + Docker Compose
 

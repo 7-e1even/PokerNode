@@ -460,6 +460,8 @@
   }
 
   .poker-seat {
+    top: var(--poker-seat-y);
+    left: var(--poker-seat-x);
     transition: left 420ms cubic-bezier(0.16, 0.78, 0.2, 1), top 420ms cubic-bezier(0.16, 0.78, 0.2, 1);
   }
 
@@ -661,6 +663,7 @@
     }
 
     .poker-seat {
+      left: clamp(3.75rem, var(--poker-seat-x), calc(100% - 3.75rem));
       scale: 0.78;
     }
 
