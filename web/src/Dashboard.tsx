@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, Bot, CheckCircle2, Copy, Crown, DoorOpen, Gamepad2, KeyRound, Link2, LogOut,
-  Menu, Plus, RadioTower, ShieldCheck, Trophy,
+  ArrowRight, Copy, Crown, DoorOpen, Gamepad2, Link2, LogOut, Menu, Plus, RadioTower,
+  Settings2, ShieldCheck, Trophy,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -21,9 +21,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BrandMark } from "@/components/brand-mark";
-import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
-import { MCPKeyDialog } from "@/components/mcp-key-dialog";
-import { WeChatIcon } from "@/components/wechat-icon";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { api, post } from "./api";
@@ -32,24 +29,21 @@ import type { ChannelLeaderboardEntry, Space, User } from "./types";
 interface Props {
   user: User;
   view: "ranking" | "channels";
-  wechatLoginEnabled: boolean;
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenSpace: (space: Space) => void;
   onOpenBindings: () => void;
+  onOpenSettings: () => void;
   onOpenAdmin?: () => void;
-  onUserUpdated: (user: User) => void;
   onLogout: () => void;
 }
 
-export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange, onOpenSpace, onOpenBindings, onOpenAdmin, onUserUpdated, onLogout }: Props) {
+export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [mcpKeyOpen, setMCPKeyOpen] = useState(false);
   const [error, setError] = useState("");
   const [leaderboardError, setLeaderboardError] = useState("");
 
@@ -107,15 +101,10 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
         onViewChange={onViewChange}
         onOpenMenu={() => setMobileOpen(true)}
         onOpenBindings={onOpenBindings}
-        onOpenAccount={() => setAccountOpen(true)}
-        onOpenMCP={() => setMCPKeyOpen(true)}
+        onOpenSettings={onOpenSettings}
         onOpenAdmin={onOpenAdmin}
-        wechatLoginEnabled={wechatLoginEnabled}
         onLogout={() => void logout()}
       />
-
-      <AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} />
-      <MCPKeyDialog open={mcpKeyOpen} onOpenChange={setMCPKeyOpen} />
 
       <div className="flex min-h-0 flex-1">
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -158,16 +147,14 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
   );
 }
 
-function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenAccount, onOpenMCP, onOpenAdmin, wechatLoginEnabled, onLogout }: {
+function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: {
   user: User;
   view: "ranking" | "channels";
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenMenu: () => void;
   onOpenBindings: () => void;
-  onOpenAccount: () => void;
-  onOpenMCP: () => void;
+  onOpenSettings: () => void;
   onOpenAdmin?: () => void;
-  wechatLoginEnabled: boolean;
   onLogout: () => void;
 }) {
   return (
@@ -186,9 +173,9 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
+          <Button variant="ghost" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenAccount}><KeyRound />账号安全</DropdownMenuItem><DropdownMenuItem onSelect={onOpenMCP}><Bot />Agent MCP</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
+        <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenSettings}><Settings2 />个人设置</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
       </DropdownMenu>
     </header>
   );

@@ -9,6 +9,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -494,6 +495,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
             key={layout.player.user_id}
             layout={layout}
             isViewer={layout.player.user_id === user.id}
+            avatarURL={layout.player.user_id === user.id && user.avatar_url ? user.avatar_url : `/api/users/${layout.player.user_id}/avatar`}
             table={table}
             isWinner={winningUserIDs.has(layout.player.user_id)}
             showWinnerCrown={winnerStage === "crown"}
@@ -637,9 +639,10 @@ function ActionCard({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-function Seat({ layout, isViewer, table, isWinner, showWinnerCrown, canRequestKick, onRequestKick }: {
+function Seat({ layout, isViewer, avatarURL, table, isWinner, showWinnerCrown, canRequestKick, onRequestKick }: {
   layout: PlayerLayout;
   isViewer: boolean;
+  avatarURL: string;
   table: TableState;
   isWinner: boolean;
   showWinnerCrown: boolean;
@@ -663,6 +666,10 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown, canRequestKi
       <Card size="sm" className="poker-seat-card relative w-max min-w-28 max-w-48 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm" data-acting={player.is_acting ? "true" : undefined}>
         {isWinner && showWinnerCrown && <span className="poker-winner-crown absolute -top-4 left-1/2 grid size-7 -translate-x-1/2 place-items-center rounded-full bg-winner text-winner-foreground shadow-md" role="img" aria-label="本手赢家"><Crown aria-hidden="true" /></span>}
         <CardContent className="flex items-center gap-1.5 px-2 md:gap-2">
+          <Avatar className="size-8 md:size-10">
+            <AvatarImage src={avatarURL} alt={player.name} />
+            <AvatarFallback>{player.name.trim().slice(0, 2).toUpperCase()}</AvatarFallback>
+          </Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1">
               <strong className="min-w-0 flex-1 truncate text-sm">{player.name}{isViewer && <span className="hidden sm:inline">（你）</span>}</strong>

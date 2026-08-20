@@ -1,17 +1,12 @@
 import { useEffect, useState, type ComponentProps, type FormEvent, type SVGProps } from "react"
 import {
   ArrowRightIcon,
-  CircleDollarSignIcon,
-  Layers3Icon,
   Link2Icon,
-  ShieldCheckIcon,
-  SparklesIcon,
 } from "lucide-react"
 import { post } from "@/api"
-import { BrandMark } from "@/components/brand-mark"
+import { LoginHeroImage } from "@/components/login-hero-image"
 import { WeChatIcon } from "@/components/wechat-icon"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -24,11 +19,12 @@ import {
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
-import type { User } from "@/types"
+import type { LoginHeroConfig, User } from "@/types"
 
 interface LoginFormProps extends Omit<ComponentProps<"div">, "onSubmit"> {
   registrationEnabled: boolean
   wechatLoginEnabled: boolean
+  loginHero: LoginHeroConfig
   onAuthenticated: (user: User) => void
 }
 
@@ -43,6 +39,7 @@ export function LoginForm({
   className,
   registrationEnabled,
   wechatLoginEnabled,
+  loginHero,
   onAuthenticated,
   ...props
 }: LoginFormProps) {
@@ -112,12 +109,11 @@ export function LoginForm({
           <form className="flex items-center p-6 md:p-10" onSubmit={submit}>
             <FieldGroup>
               <div className="flex flex-col items-center gap-2 text-center">
-                <BrandMark className="mb-2 size-11" />
                 <h1 className="text-2xl font-bold">
                   {mode === "login" ? "欢迎回来" : "创建牌手账号"}
                 </h1>
                 <p className="text-balance text-muted-foreground">
-                  {mode === "login" ? "登录 PokerNode，继续朋友间的牌局" : "创建账号后将自动登录"}
+                  {mode === "login" ? "登录你的 PokerNode 账号" : "创建账号后将自动登录"}
                 </p>
               </div>
 
@@ -220,7 +216,9 @@ export function LoginForm({
             </FieldGroup>
           </form>
 
-          <PokerNodeStory />
+          <section className="relative hidden min-h-[640px] overflow-hidden bg-muted md:block">
+            <LoginHeroImage config={loginHero} className="absolute inset-0" />
+          </section>
         </CardContent>
       </Card>
     </div>
@@ -232,62 +230,5 @@ function ModeButton({ children, onClick }: { children: string; onClick: () => vo
     <button type="button" className="font-medium underline underline-offset-4" onClick={onClick}>
       {children}
     </button>
-  )
-}
-
-function PokerNodeStory() {
-  return (
-    <section className="relative hidden min-h-[640px] overflow-hidden bg-muted p-8 md:flex md:flex-col md:justify-between">
-      <div className="relative flex items-center gap-3 font-heading text-lg font-semibold">
-        <BrandMark className="size-10" />
-        PokerNode
-      </div>
-
-      <div className="relative">
-        <Badge variant="outline" className="mb-5 rounded-full bg-background/70 px-3 py-1 backdrop-blur">
-          <SparklesIcon data-icon="inline-start" /> 私有牌局频道
-        </Badge>
-        <h2 className="font-heading text-4xl leading-[1.08] font-semibold tracking-tight">
-          朋友间的牌局，
-          <br />一处就够了。
-        </h2>
-        <p className="mt-5 max-w-sm leading-7 text-muted-foreground">
-          频道、牌桌与实时结算由 PokerNode 统一管理，每个频道的数据和凭证彼此隔离。
-        </p>
-        <div className="mt-6 flex flex-wrap gap-2">
-          <Badge variant="secondary"><Layers3Icon data-icon="inline-start" />频道隔离</Badge>
-          <Badge variant="secondary"><ShieldCheckIcon data-icon="inline-start" />凭证加密</Badge>
-          <Badge variant="secondary"><CircleDollarSignIcon data-icon="inline-start" />实时结算</Badge>
-        </div>
-      </div>
-
-      <div className="relative rounded-xl border bg-card/80 p-4 shadow-sm backdrop-blur">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-muted-foreground">当前底池</p>
-            <p className="mt-1 text-xl font-semibold">$128.40</p>
-          </div>
-          <Badge>River</Badge>
-        </div>
-        <div className="flex gap-2">
-          <PreviewCard value="A♦" red />
-          <PreviewCard value="K♠" />
-          <PreviewCard value="10♥" red />
-          <PreviewCard value="7♣" />
-          <PreviewCard value="2♠" />
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function PreviewCard({ value, red = false }: { value: string; red?: boolean }) {
-  return (
-    <div className={cn(
-      "grid aspect-[3/4] flex-1 place-items-center rounded-lg border bg-card font-heading text-sm font-semibold shadow-sm",
-      red && "text-destructive",
-    )}>
-      {value}
-    </div>
   )
 }

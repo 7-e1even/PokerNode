@@ -1,37 +1,26 @@
-import { useState } from "react";
-import { Bot, ExternalLink, KeyRound, LogOut } from "lucide-react";
-import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
-import { MCPKeyDialog } from "@/components/mcp-key-dialog";
+import { ExternalLink, LogOut, Settings2 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
 import type { User } from "@/types";
 
-export function NavUser({ user, onOpenLobby, onUserUpdated, onLogout }: { user: User; onOpenLobby: () => void; onUserUpdated: (user: User) => void; onLogout: () => void }) {
-  const { isMobile } = useSidebar();
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [mcpKeyOpen, setMCPKeyOpen] = useState(false);
+export function NavUser({ user, onOpenLobby, onOpenSettings, onLogout }: { user: User; onOpenLobby: () => void; onOpenSettings: () => void; onLogout: () => void }) {
   return (
-    <><SidebarMenu>
-      <SidebarMenuItem>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
-              <Avatar className="size-8 rounded-lg"><AvatarImage className="rounded-lg" src={user.avatar_url} alt={user.display_name} /><AvatarFallback className="rounded-lg">{initials(user.display_name)}</AvatarFallback></Avatar>
-              <div className="grid flex-1 text-left text-sm leading-tight"><span className="truncate font-medium">{user.display_name}</span><span className="truncate text-xs text-muted-foreground">{roleLabel(user.role)}</span></div>
-            </SidebarMenuButton>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-(--radix-dropdown-menu-trigger-width) min-w-56" side={isMobile ? "bottom" : "right"} align="end" sideOffset={4}>
-            <DropdownMenuLabel><span className="block">{user.display_name}</span><span className="block font-normal text-muted-foreground">@{user.username}</span></DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setAccountOpen(true)}><KeyRound />账号安全</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setMCPKeyOpen(true)}><Bot />Agent MCP</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onOpenLobby}><ExternalLink />打开玩家大厅</DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出后台</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </SidebarMenuItem>
-    </SidebarMenu><AccountCredentialsDialog user={user} open={accountOpen} onOpenChange={setAccountOpen} onUpdated={onUserUpdated} /><MCPKeyDialog open={mcpKeyOpen} onOpenChange={setMCPKeyOpen} /></>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="h-auto gap-2 p-1.5 pr-2">
+          <Avatar className="size-8"><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar>
+          <span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-56" align="end">
+        <DropdownMenuLabel><span className="block">{user.display_name}</span><span className="block font-normal text-muted-foreground">@{user.username}</span></DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={onOpenSettings}><Settings2 />个人设置</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onOpenLobby}><ExternalLink />打开玩家大厅</DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出后台</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

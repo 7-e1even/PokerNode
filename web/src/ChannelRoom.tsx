@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  ArrowLeft, CircleDollarSign, Clock3, Copy, Crown, Eraser, Link2, MoreHorizontal, Plus, Table2,
-  Spade, Trash2, Trophy,
+  ArrowLeft, ChevronRight, CircleDollarSign, Clock3, Copy, Crown, Eraser, Link2, MessageCircle, MoreHorizontal, Plus, Send,
+  PanelRightClose, PanelRightOpen, Spade, Table2, Trash2, Trophy,
 } from "lucide-react";
+import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { SidebarContent, SidebarHeader, SidebarInset, SidebarSeparator } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -24,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { api, post, remove } from "./api";
 import LandlordRoom from "./LandlordRoom";
 import PokerRoom from "./PokerRoom";
-import type { ChannelLeaderboardEntry, GameType, Space, TableSeatSummary, TableSummary, User } from "./types";
+import type { ChannelLeaderboardEntry, ChannelMessage, GameType, Space, TableSeatSummary, TableSummary, User } from "./types";
 
 interface Props {
   user: User;
@@ -38,15 +41,20 @@ interface Props {
 
 type RoomPlayer = TableSeatSummary & { tableID: string; tableName: string };
 type TableAdminAction = { mode: "clear" | "delete"; table: TableSummary };
+const channelSidebarOpenKey = "pokernode.channel-sidebar.open";
+const channelSidebarWidthKey = "pokernode.channel-sidebar.width";
 
 export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBindings, onOpenBalances }: Props) {
   const [space, setSpace] = useState(initialSpace);
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
+  const [messages, setMessages] = useState<ChannelMessage[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [leaderboardError, setLeaderboardError] = useState("");
+  const [messagesLoading, setMessagesLoading] = useState(true);
+  const [messagesError, setMessagesError] = useState("");
   const [spaceError, setSpaceError] = useState("");
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -57,6 +65,13 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
   const spaceRequestInFlight = useRef(false);
   const tablesRequestInFlight = useRef(false);
   const leaderboardRequestInFlight = useRef(false);
+  const messagesRequestInFlight = useRef(false);
+  const latestMessageID = useRef(0);
+  const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
+  const desktopSidebar = useDesktopSidebarLayout();
+  const [sidebarOpen, setSidebarOpen] = useState(() => readSidebarOpen());
+  const [sidebarDefaultWidth] = useState(() => readSidebarWidth());
+  const sidebarWidthRef = useRef(sidebarDefaultWidth);
 
   const loadSpace = useCallback(async () => {
     if (spaceRequestInFlight.current) return;
@@ -104,6 +119,36 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     }
   }, [initialSpace.id]);
 
+  const loadMessages = useCallback(async (showLoading = false) => {
+    if (messagesRequestInFlight.current) return;
+    messagesRequestInFlight.current = true;
+    if (showLoading) setMessagesLoading(true);
+    const afterID = showLoading ? 0 : latestMessageID.current;
+    try {
+      const result = await api<{ messages: ChannelMessage[] }>(`/api/spaces/${initialSpace.id}/messages?after=${afterID}`);
+      const received = Array.isArray(result.messages) ? result.messages : [];
+      if (showLoading) {
+        setMessages(received);
+      } else if (received.length > 0) {
+        setMessages((current) => [...current, ...received.filter((message) => !current.some((item) => item.id === message.id))].slice(-100));
+      }
+      if (received.length > 0) latestMessageID.current = received[received.length - 1].id;
+      setMessagesError("");
+    } catch (caught) {
+      setMessagesError(caught instanceof Error ? caught.message : "读取频道聊天失败");
+    } finally {
+      messagesRequestInFlight.current = false;
+      if (showLoading) setMessagesLoading(false);
+    }
+  }, [initialSpace.id]);
+
+  const sendMessage = useCallback(async (body: string) => {
+    const result = await post<{ message: ChannelMessage }>(`/api/spaces/${initialSpace.id}/messages`, { body });
+    setMessages((current) => current.some((message) => message.id === result.message.id) ? current : [...current, result.message].slice(-100));
+    latestMessageID.current = Math.max(latestMessageID.current, result.message.id);
+    setMessagesError("");
+  }, [initialSpace.id]);
+
   useEffect(() => { setSpace(initialSpace); }, [initialSpace]);
 
   useEffect(() => { void loadSpace(); }, [loadSpace]);
@@ -119,6 +164,15 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     const timer = window.setInterval(() => void loadLeaderboard(), 5_000);
     return () => window.clearInterval(timer);
   }, [loadLeaderboard]);
+
+  useEffect(() => {
+    if (selectedTable) return;
+    latestMessageID.current = 0;
+    setMessages([]);
+    void loadMessages(true);
+    const timer = window.setInterval(() => void loadMessages(), 2_500);
+    return () => window.clearInterval(timer);
+  }, [loadMessages, selectedTable]);
 
   useEffect(() => {
     if (!initialTableID) {
@@ -216,8 +270,71 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     }
   }
 
+  function toggleChannelSidebar() {
+    const panel = sidebarPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) {
+      panel.resize(`${sidebarWidthRef.current}px`);
+    } else {
+      panel.collapse();
+    }
+  }
+
+  function rememberSidebarSize(size: PanelSize) {
+    const open = size.inPixels > 0;
+    setSidebarOpen(open);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(channelSidebarOpenKey, String(open));
+      if (open) {
+        sidebarWidthRef.current = Math.round(size.inPixels);
+        window.localStorage.setItem(channelSidebarWidthKey, String(sidebarWidthRef.current));
+      }
+    } catch {
+      // Keep the current in-memory layout when browser storage is unavailable.
+    }
+  }
+
+  const channelMain = (
+    <SidebarInset className={cn("min-w-0 bg-background", desktopSidebar ? "h-full min-h-0 overflow-auto" : "min-h-max flex-none")}>
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <section className="flex min-w-0 flex-col gap-4" aria-labelledby="table-list-title">
+          <header className="flex flex-col gap-1">
+            <h2 id="table-list-title" className="font-heading text-xl font-semibold">{gameType === "landlord" ? "斗地主" : "德州扑克"}牌局</h2>
+            <p className="text-sm text-muted-foreground">选择牌桌直接进入，空位和玩家状态每 5 秒更新。</p>
+          </header>
+          {(spaceError || error) && <Alert variant="destructive"><AlertDescription>{spaceError || error}</AlertDescription></Alert>}
+          {loading ? (
+            <div className="table-map-grid">{Array.from({ length: 6 }, (_, index) => <TableSkeleton key={index} />)}</div>
+          ) : gameTables.length === 0 ? (
+            <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{space.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{space.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
+          ) : (
+            <div className="table-map-grid">
+              {gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onManage={space.can_manage ? () => setTableManagement(table) : undefined} />)}
+              {space.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}
+            </div>
+          )}
+        </section>
+      </div>
+    </SidebarInset>
+  );
+
+  const channelSidebar = (
+    <ChannelSidebar
+      leaderboard={leaderboard}
+      players={roomPlayers}
+      currentUserID={user.id}
+      leaderboardLoading={leaderboardLoading}
+      leaderboardError={leaderboardError}
+      messages={messages}
+      messagesLoading={messagesLoading}
+      messagesError={messagesError}
+      onSendMessage={sendMessage}
+    />
+  );
+
   return (
-    <div className="game-canvas channel-shell flex min-h-svh flex-col">
+    <div className="game-canvas channel-shell flex h-svh flex-col overflow-hidden">
       <header className="game-topbar grid min-h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-2 sm:px-6 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
         <div className="flex min-w-0 items-center gap-3">
           <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" variant="ghost" onClick={onBack} aria-label="返回频道大厅"><ArrowLeft data-icon="inline-start" /><span className="hidden sm:inline">频道大厅</span></Button>
@@ -229,31 +346,33 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
           <Button className="min-h-11 lg:min-h-8" variant={gameType === "texas_holdem" ? "secondary" : "ghost"} onClick={() => setGameType("texas_holdem")}><Spade data-icon="inline-start" />德州扑克</Button>
           <Button className="min-h-11 lg:min-h-8" variant={gameType === "landlord" ? "secondary" : "ghost"} onClick={() => setGameType("landlord")}><Crown data-icon="inline-start" />斗地主</Button>
         </nav>
-        <div className="flex items-center justify-self-end gap-2"><Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBindings} aria-label="频道账号"><Link2 data-icon="inline-start" /><span className="hidden sm:inline">频道账号</span></Button>{canManageBalances && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBalances} aria-label="余额管理"><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">余额管理</span></Button>}{space.can_manage && space.invite_code && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={() => void copyInvite()} aria-label="复制频道邀请码"><Copy data-icon="inline-start" /><span className="hidden sm:inline">邀请码</span></Button>}</div>
+        <div className="flex items-center justify-self-end gap-2"><Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBindings} aria-label="频道账号"><Link2 data-icon="inline-start" /><span className="hidden sm:inline">频道账号</span></Button>{canManageBalances && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBalances} aria-label="余额管理"><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">余额管理</span></Button>}{space.can_manage && space.invite_code && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={() => void copyInvite()} aria-label="复制频道邀请码"><Copy data-icon="inline-start" /><span className="hidden sm:inline">邀请码</span></Button>}{desktopSidebar && <Tooltip><TooltipTrigger asChild><Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="icon-sm" variant="ghost" onClick={toggleChannelSidebar} aria-label={sidebarOpen ? "收起频道侧栏" : "展开频道侧栏"}>{sidebarOpen ? <PanelRightClose /> : <PanelRightOpen />}</Button></TooltipTrigger><TooltipContent>{sidebarOpen ? "收起频道侧栏" : "展开频道侧栏"}</TooltipContent></Tooltip>}</div>
       </header>
 
-      <main className="min-w-0 flex-1 overflow-auto">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <section className="flex min-w-0 flex-col gap-4" aria-labelledby="table-list-title">
-              <header className="flex flex-col gap-1">
-                <h2 id="table-list-title" className="font-heading text-xl font-semibold">{gameType === "landlord" ? "斗地主" : "德州扑克"}牌局</h2>
-                <p className="text-sm text-muted-foreground">选择牌桌直接进入，空位和玩家状态每 5 秒更新。</p>
-              </header>
-              {(spaceError || error) && <Alert variant="destructive"><AlertDescription>{spaceError || error}</AlertDescription></Alert>}
-              {loading ? (
-                  <div className="table-map-grid">{Array.from({ length: 6 }, (_, index) => <TableSkeleton key={index} />)}</div>
-              ) : gameTables.length === 0 ? (
-                  <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{space.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{space.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
-              ) : (
-                  <div className="table-map-grid">{gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onManage={space.can_manage ? () => setTableManagement(table) : undefined} />)}{space.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
-              )}
-            </section>
-
-            <LeaderboardCard entries={leaderboard} players={roomPlayers} currentUserID={user.id} loading={leaderboardLoading} error={leaderboardError} />
-          </div>
+      {desktopSidebar ? (
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+          <ResizablePanel id="channel-main" minSize="30rem">{channelMain}</ResizablePanel>
+          <ResizableHandle withHandle aria-label="调整频道侧栏宽度" />
+          <ResizablePanel
+            id="channel-sidebar"
+            panelRef={sidebarPanelRef}
+            defaultSize={sidebarOpen ? `${sidebarDefaultWidth}px` : 0}
+            minSize="16rem"
+            maxSize="30rem"
+            collapsedSize={0}
+            collapsible
+            groupResizeBehavior="preserve-pixel-size"
+            onResize={rememberSidebarSize}
+          >
+            {channelSidebar}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          {channelMain}
+          {channelSidebar}
         </div>
-      </main>
+      )}
 
       <CreateTableDialog
         open={createOpen}
@@ -382,7 +501,31 @@ function CreateTableTile({ onCreate }: { onCreate: () => void }) {
   return <Button variant="ghost" className="table-map-tile items-center justify-center" onClick={onCreate}><Avatar size="lg"><AvatarFallback>+</AvatarFallback></Avatar><strong>创建新牌桌</strong><span className="text-xs text-muted-foreground">设置当前游戏的牌桌规则</span></Button>;
 }
 
-function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
+function ChannelSidebar({ leaderboard, players, currentUserID, leaderboardLoading, leaderboardError, messages, messagesLoading, messagesError, onSendMessage }: {
+  leaderboard: ChannelLeaderboardEntry[];
+  players: RoomPlayer[];
+  currentUserID: number;
+  leaderboardLoading: boolean;
+  leaderboardError: string;
+  messages: ChannelMessage[];
+  messagesLoading: boolean;
+  messagesError: string;
+  onSendMessage: (body: string) => Promise<void>;
+}) {
+  return (
+    <aside data-slot="sidebar" className="flex h-full min-h-[32rem] w-full flex-col border-t bg-sidebar text-sidebar-foreground min-[900px]:min-h-0 min-[900px]:border-t-0" aria-label="频道侧栏">
+      <SidebarHeader className="p-4">
+        <LeaderboardPanel entries={leaderboard} players={players} currentUserID={currentUserID} loading={leaderboardLoading} error={leaderboardError} />
+      </SidebarHeader>
+      <SidebarSeparator className="mx-4" style={{ width: "auto" }} />
+      <SidebarContent className="overflow-x-clip overflow-y-hidden p-4">
+        <ChannelChat messages={messages} currentUserID={currentUserID} loading={messagesLoading} error={messagesError} onSend={onSendMessage} />
+      </SidebarContent>
+    </aside>
+  );
+}
+
+function LeaderboardPanel({ entries, players, currentUserID, loading, error }: {
   entries: ChannelLeaderboardEntry[];
   players: RoomPlayer[];
   currentUserID: number;
@@ -393,22 +536,48 @@ function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
   const ranked = entries
     .map((entry) => ({ ...entry, currentNetCents: entry.net_cents + (activePlayers.get(entry.user_id)?.stack_cents || 0) }))
     .sort((left, right) => right.currentNetCents - left.currentNetCents || right.sessions - left.sessions || left.display_name.localeCompare(right.display_name));
+  const currentRank = ranked.findIndex((entry) => entry.user_id === currentUserID);
+  const currentOutsidePreview = currentRank >= 3 ? ranked[currentRank] : undefined;
 
   return (
-    <Card className="[--card-spacing:--spacing(5)] xl:sticky xl:top-6">
-      <CardHeader>
-        <CardTitle>频道排名</CardTitle>
-        <CardDescription>按当前净胜筹码排序</CardDescription>
-        <CardAction><Trophy /></CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+    <Dialog>
+      <section className="flex flex-col gap-3" aria-labelledby="channel-ranking-title">
+        <header className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2"><Trophy className="shrink-0 text-muted-foreground" /><strong id="channel-ranking-title" className="truncate text-sm">频道排名</strong></div>
+          <DialogTrigger asChild><Button size="sm" variant="ghost">完整榜单<ChevronRight data-icon="inline-end" /></Button></DialogTrigger>
+        </header>
+        {error ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : loading ? (
+          <div className="flex flex-col gap-3" aria-hidden="true">{Array.from({ length: 3 }, (_, index) => <div className="flex items-center gap-2" key={index}><Skeleton className="size-7 rounded-full" /><Skeleton className="size-8 rounded-full" /><Skeleton className="h-4 flex-1" /></div>)}</div>
+        ) : ranked.length === 0 ? (
+          <Empty className="border-0 py-5"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>暂无排名</EmptyTitle><EmptyDescription>完成第一场牌局后显示。</EmptyDescription></EmptyHeader></Empty>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {ranked.slice(0, 3).map((entry, index) => (
+              <div className="flex items-center gap-2 py-1.5" key={entry.user_id}>
+                <Badge className="size-7 shrink-0 justify-center rounded-full p-0" variant="outline">{index === 0 ? <Crown aria-label="第一名" className="fill-current text-winner" /> : index + 1}</Badge>
+                <Avatar className="size-8"><AvatarImage src={entry.avatar_url} alt={entry.display_name} /><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
+                <strong className="min-w-0 flex-1 truncate text-sm">{entry.display_name}</strong>
+                <strong className={cn("shrink-0 text-xs tabular-nums", entry.currentNetCents > 0 && "text-success", entry.currentNetCents < 0 && "text-destructive", entry.currentNetCents === 0 && "text-muted-foreground")}>{netMoney(entry.currentNetCents)}</strong>
+              </div>
+            ))}
+            {currentOutsidePreview && <><Separator /><div className="flex items-center justify-between gap-3 pt-2 text-xs text-muted-foreground"><span>我的排名 #{currentRank + 1}</span><strong className={cn("tabular-nums", currentOutsidePreview.currentNetCents > 0 && "text-success", currentOutsidePreview.currentNetCents < 0 && "text-destructive")}>{netMoney(currentOutsidePreview.currentNetCents)}</strong></div></>}
+          </div>
+        )}
+      </section>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>频道排名</DialogTitle>
+          <DialogDescription>按当前净胜筹码排序，正在牌桌上的筹码会实时计入。</DialogDescription>
+        </DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         {loading ? (
           <div className="flex flex-col gap-3" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <div className="flex items-center gap-3" key={index}><Skeleton className="size-7 rounded-full" /><Skeleton className="size-9 rounded-full" /><div className="grid flex-1 gap-2"><Skeleton className="h-4 w-24" /><Skeleton className="h-3 w-16" /></div><Skeleton className="h-5 w-16" /></div>)}</div>
         ) : ranked.length === 0 ? (
-          <Empty className="border-0 py-10"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>暂无排名</EmptyTitle><EmptyDescription>完成第一场牌局后会显示战绩。</EmptyDescription></EmptyHeader></Empty>
+          <Empty className="border-0 py-8"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>暂无排名</EmptyTitle><EmptyDescription>完成第一场牌局后会显示战绩。</EmptyDescription></EmptyHeader></Empty>
         ) : (
-          <ScrollArea className="max-h-[36rem]">
+          <ScrollArea className="max-h-[60vh]">
             <div className="flex w-0 min-w-full flex-col gap-1 pr-3">
               {ranked.map((entry, index) => {
                 const active = activePlayers.get(entry.user_id);
@@ -426,8 +595,69 @@ function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
         )}
         <Separator />
         <p className="text-xs leading-5 text-muted-foreground">净胜由已完成的买入和结算计算；正在牌桌上的筹码会实时计入。</p>
-      </CardContent>
-    </Card>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChannelChat({ messages, currentUserID, loading, error, onSend }: {
+  messages: ChannelMessage[];
+  currentUserID: number;
+  loading: boolean;
+  error: string;
+  onSend: (body: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "nearest" }); }, [messages]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const body = draft.trim();
+    if (!body || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      await onSend(body);
+      setDraft("");
+    } catch (caught) {
+      setSendError(caught instanceof Error ? caught.message : "消息发送失败");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <section className="flex min-h-[28rem] flex-1 flex-col gap-3 min-[900px]:min-h-0" aria-labelledby="channel-chat-title">
+      <header className="flex items-center gap-2"><MessageCircle className="text-muted-foreground" /><strong id="channel-chat-title" className="text-sm">频道聊天</strong></header>
+      {(error || sendError) && <p className="text-xs text-destructive">{sendError || error}</p>}
+      <ScrollArea className="min-h-0 flex-1">
+        {loading ? (
+          <div className="flex flex-col gap-4 pr-3" aria-hidden="true">{Array.from({ length: 4 }, (_, index) => <div className="flex gap-2" key={index}><Skeleton className="size-7 rounded-full" /><div className="grid flex-1 gap-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-full" /></div></div>)}</div>
+        ) : messages.length === 0 ? (
+          <Empty className="border-0 py-8"><EmptyHeader><EmptyMedia variant="icon"><MessageCircle /></EmptyMedia><EmptyTitle>还没有消息</EmptyTitle><EmptyDescription>和频道里的牌友打个招呼吧。</EmptyDescription></EmptyHeader></Empty>
+        ) : (
+          <div className="flex flex-col gap-4 pr-3">
+            {messages.map((message) => (
+              <div className="flex items-start gap-2" key={message.id}>
+                <Avatar className="size-7"><AvatarImage src={message.avatar_url} alt={message.display_name} /><AvatarFallback>{initials(message.display_name)}</AvatarFallback></Avatar>
+                <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="truncate text-xs">{message.display_name}</strong>{message.user_id === currentUserID && <Badge variant="secondary">我</Badge>}<time className="ml-auto shrink-0 text-xs text-muted-foreground" dateTime={message.created_at}>{messageTime(message.created_at)}</time></div><p className="mt-1 whitespace-pre-wrap break-words rounded-md bg-muted px-2.5 py-2 text-sm leading-5">{message.body}</p></div>
+              </div>
+            ))}
+            <div ref={endRef} />
+          </div>
+        )}
+      </ScrollArea>
+      <form onSubmit={(event) => void submit(event)}>
+        <InputGroup>
+          <InputGroupInput value={draft} maxLength={500} placeholder="发消息…" aria-label="频道消息" onChange={(event) => setDraft(event.target.value)} />
+          <InputGroupAddon align="inline-end"><InputGroupButton type="submit" size="icon-xs" disabled={sending || draft.trim() === ""} aria-label="发送消息">{sending ? <Spinner data-icon="inline-start" /> : <Send data-icon="inline-start" />}</InputGroupButton></InputGroupAddon>
+        </InputGroup>
+      </form>
+    </section>
   );
 }
 
@@ -504,6 +734,37 @@ function TableSkeleton() {
   return <div className="table-map-tile pointer-events-none"><div className="flex items-center justify-between gap-3"><Skeleton className="h-8 w-24" /><Skeleton className="h-5 w-12" /></div><div className="flex items-end justify-between gap-3"><Skeleton className="h-10 w-28" /><Skeleton className="h-5 w-16" /></div><Skeleton className="h-4 w-full" /></div>;
 }
 
+function useDesktopSidebarLayout() {
+  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia("(min-width: 900px)").matches);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 900px)");
+    const update = () => setDesktop(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return desktop;
+}
+
+function readSidebarOpen() {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(channelSidebarOpenKey) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function readSidebarWidth() {
+  if (typeof window === "undefined") return 320;
+  try {
+    const width = Number(window.localStorage.getItem(channelSidebarWidthKey));
+    return Number.isFinite(width) ? Math.min(480, Math.max(256, width)) : 320;
+  } catch {
+    return 320;
+  }
+}
+
 function initials(name: string) {
   return name.trim().slice(0, 2).toUpperCase();
 }
@@ -514,6 +775,12 @@ function money(cents: number) {
 
 function netMoney(cents: number) {
   return cents > 0 ? `+${money(cents)}` : money(cents);
+}
+
+function messageTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function tableDisplayName(name: string) {

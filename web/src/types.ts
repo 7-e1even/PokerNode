@@ -36,12 +36,27 @@ export interface PermissionDefinition {
   group: string;
 }
 
+export interface LoginHeroConfig {
+  url: string;
+  position_x: number;
+  position_y: number;
+  zoom: number;
+}
+
+export const DEFAULT_LOGIN_HERO_CONFIG: LoginHeroConfig = {
+  url: "",
+  position_x: 50,
+  position_y: 50,
+  zoom: 1,
+};
+
 export interface AdminOverview {
   users: User[];
   counts: Record<string, number>;
   spaces: AdminSpaceSummary[];
   platform_counts: AdminPlatformCounts;
   registration_enabled: boolean;
+  login_hero: LoginHeroConfig;
   permissions: string[];
   roles: Role[];
   permission_catalog: PermissionDefinition[];
@@ -304,6 +319,16 @@ export interface ChannelLeaderboardEntry {
   avatar_url?: string;
   net_cents: number;
   sessions: number;
+}
+
+export interface ChannelMessage {
+  id: number;
+  space_id: string;
+  user_id: number;
+  display_name: string;
+  avatar_url?: string;
+  body: string;
+  created_at: string;
 }
 
 export interface ManagedBalanceMember {

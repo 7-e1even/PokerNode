@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"pokernode/internal/access"
 	"pokernode/internal/store"
 )
+
+const maxLoginHeroImageBytes = 5 << 20
 
 type adminUserInput struct {
 	Username        string   `json:"username"`
@@ -32,6 +35,12 @@ type adminUserUpdate struct {
 
 type adminRankingVisibilityInput struct {
 	Hidden bool `json:"hidden"`
+}
+
+type adminLoginHeroPlacementInput struct {
+	PositionX float64 `json:"position_x"`
+	PositionY float64 `json:"position_y"`
+	Zoom      float64 `json:"zoom"`
 }
 
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, actor store.User) error {
@@ -56,6 +65,10 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		}
 	}
 	registrationEnabled, err := s.store.RegistrationEnabled(r.Context())
+	if err != nil {
+		return err
+	}
+	loginHeroConfig, err := s.store.LoginHeroImageConfig(r.Context())
 	if err != nil {
 		return err
 	}
@@ -90,6 +103,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		"spaces":               spaces,
 		"platform_counts":      platformCounts,
 		"registration_enabled": registrationEnabled,
+		"login_hero":           loginHeroImagePayload(loginHeroConfig),
 		"permissions":          permissions,
 		"roles":                roles,
 		"permission_catalog":   access.Catalog(),
@@ -468,5 +482,74 @@ func (s *Server) handleAdminRegistration(w http.ResponseWriter, r *http.Request,
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"registration_enabled": input.Enabled})
+	return nil
+}
+
+func (s *Server) handleAdminLoginHeroImage(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	if actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLoginHeroImageBytes+(1<<20))
+	if err := r.ParseMultipartForm(maxLoginHeroImageBytes); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "图片不能超过 5 MB"}
+		}
+		return &apiError{Status: http.StatusBadRequest, Message: "图片上传格式无效"}
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		return &apiError{Status: http.StatusBadRequest, Message: "请选择要上传的图片"}
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxLoginHeroImageBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxLoginHeroImageBytes {
+		return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "图片不能超过 5 MB"}
+	}
+	contentType := http.DetectContentType(data)
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		return &apiError{Status: http.StatusUnsupportedMediaType, Message: "仅支持 JPEG、PNG 或 WebP 图片"}
+	}
+	updatedAt, err := s.store.SetLoginHeroImage(r.Context(), contentType, data)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"login_hero": loginHeroImagePayload(store.LoginHeroImageConfig{UpdatedAt: updatedAt, PositionX: 50, PositionY: 50, Zoom: 1})})
+	return nil
+}
+
+func (s *Server) handleAdminUpdateLoginHeroPlacement(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	if actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
+	}
+	var input adminLoginHeroPlacementInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	if input.PositionX < 0 || input.PositionX > 100 || input.PositionY < 0 || input.PositionY > 100 || input.Zoom < 1 || input.Zoom > 3 {
+		return &apiError{Status: http.StatusBadRequest, Message: "图片位置或缩放比例无效"}
+	}
+	config, err := s.store.UpdateLoginHeroImagePlacement(r.Context(), input.PositionX, input.PositionY, input.Zoom)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"login_hero": loginHeroImagePayload(config)})
+	return nil
+}
+
+func (s *Server) handleAdminDeleteLoginHeroImage(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	if actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
+	}
+	if err := s.store.DeleteLoginHeroImage(r.Context()); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

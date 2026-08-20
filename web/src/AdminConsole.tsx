@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Activity, Eye, EyeOff, KeyRound, LockKeyhole, Plus, RadioTower, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, Trophy, UserCog, UsersRound } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Activity, Eye, EyeOff, ImageUp, KeyRound, LockKeyhole, Plus, RadioTower, RotateCcw, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, Trophy, UserCog, UsersRound } from "lucide-react";
 import { toast } from "sonner";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
+import { LoginHeroImage } from "@/components/login-hero-image";
 import { SectionCards } from "@/components/section-cards";
 import type { AdminSection } from "@/components/app-sidebar";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -21,18 +22,20 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { api, patch, post, put, remove } from "./api";
+import { api, patch, post, put, remove, upload } from "./api";
 import BalanceManager from "./BalanceManager";
 import RoleManager from "./RoleManager";
-import type { AdminOverview, AdminSpaceSummary, Role, User, UserRole, UserStatus } from "./types";
+import { DEFAULT_LOGIN_HERO_CONFIG, type AdminOverview, type AdminSpaceSummary, type LoginHeroConfig, type Role, type User, type UserRole, type UserStatus } from "./types";
 
 interface Props {
   currentUser: User;
   section: AdminSection;
   onRegistrationChanged: (enabled: boolean) => void;
+  onLoginHeroChanged: (config: LoginHeroConfig) => void;
 }
 
 function normalizeAdminOverview(result: AdminOverview): AdminOverview {
@@ -57,10 +60,11 @@ function normalizeAdminOverview(result: AdminOverview): AdminOverview {
         }))
       : [],
     permission_catalog: Array.isArray(result.permission_catalog) ? result.permission_catalog : [],
+    login_hero: { ...DEFAULT_LOGIN_HERO_CONFIG, ...(result.login_hero || {}) },
   };
 }
 
-export default function AdminConsole({ currentUser, section, onRegistrationChanged }: Props) {
+export default function AdminConsole({ currentUser, section, onRegistrationChanged, onLoginHeroChanged }: Props) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -72,6 +76,9 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   const [deleteForce, setDeleteForce] = useState(false);
   const [confirmCloseRegistration, setConfirmCloseRegistration] = useState(false);
   const [registrationBusy, setRegistrationBusy] = useState(false);
+  const [loginHeroBusy, setLoginHeroBusy] = useState(false);
+  const [loginHeroDraft, setLoginHeroDraft] = useState<LoginHeroConfig | null>(null);
+  const loginHeroInputRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     setError("");
@@ -79,7 +86,9 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
       const result = await api<AdminOverview>("/api/admin/overview");
       const normalized = normalizeAdminOverview(result);
       setOverview(normalized);
+      setLoginHeroDraft(normalized.login_hero);
       onRegistrationChanged(normalized.registration_enabled);
+      onLoginHeroChanged(normalized.login_hero);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取运营数据失败");
     } finally {
@@ -99,6 +108,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   const canManageUsers = permissions.has("users:manage");
   const canManageRoles = permissions.has("roles:manage");
   const canManageRegistration = permissions.has("registration:manage");
+  const canManageLoginHero = currentUser.role === "super_admin";
 
   async function saveRegistration(enabled: boolean) {
     setRegistrationBusy(true);
@@ -112,6 +122,70 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     } finally {
       setRegistrationBusy(false);
       setConfirmCloseRegistration(false);
+    }
+  }
+
+  async function uploadLoginHero(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      toast.error("仅支持 JPEG、PNG 或 WebP 图片");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("图片不能超过 5 MB");
+      return;
+    }
+    setLoginHeroBusy(true);
+    try {
+      const body = new FormData();
+      body.append("image", file);
+      const result = await upload<{ login_hero: LoginHeroConfig }>("/api/admin/settings/login-hero", body);
+      setOverview((current) => current ? { ...current, login_hero: result.login_hero } : current);
+      setLoginHeroDraft(result.login_hero);
+      onLoginHeroChanged(result.login_hero);
+      toast.success("登录页宣传图已更新");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "宣传图上传失败");
+    } finally {
+      setLoginHeroBusy(false);
+    }
+  }
+
+  async function resetLoginHero() {
+    setLoginHeroBusy(true);
+    try {
+      await remove("/api/admin/settings/login-hero");
+      const defaultConfig = { ...DEFAULT_LOGIN_HERO_CONFIG };
+      setOverview((current) => current ? { ...current, login_hero: defaultConfig } : current);
+      setLoginHeroDraft(defaultConfig);
+      onLoginHeroChanged(defaultConfig);
+      toast.success("已恢复官方默认占位图");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "恢复默认图失败");
+    } finally {
+      setLoginHeroBusy(false);
+    }
+  }
+
+  async function saveLoginHeroPlacement() {
+    if (!overview || !loginHeroDraft?.url) return;
+    setLoginHeroBusy(true);
+    try {
+      const result = await patch<{ login_hero: LoginHeroConfig }>("/api/admin/settings/login-hero", {
+        position_x: loginHeroDraft.position_x,
+        position_y: loginHeroDraft.position_y,
+        zoom: loginHeroDraft.zoom,
+      });
+      setOverview((current) => current ? { ...current, login_hero: result.login_hero } : current);
+      setLoginHeroDraft(result.login_hero);
+      onLoginHeroChanged(result.login_hero);
+      toast.success("图片展示区域已保存");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "图片展示区域保存失败");
+    } finally {
+      setLoginHeroBusy(false);
     }
   }
 
@@ -169,7 +243,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     channels: permissions.has("channels:manage"),
     balances: permissions.has("balances:manage"),
     rankings: currentUser.role === "super_admin",
-    settings: canManageRegistration,
+    settings: canManageRegistration || canManageLoginHero,
   }[section];
   if (!sectionAllowed) {
     return <div className="p-4 sm:p-6 lg:p-8"><Alert variant="destructive"><AlertDescription>当前角色没有访问此功能的权限。</AlertDescription></Alert></div>;
@@ -210,8 +284,38 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   }
 
   if (section === "settings") {
+    const heroDraft = loginHeroDraft ?? overview.login_hero;
+    const heroPlacementChanged = heroDraft.position_x !== overview.login_hero.position_x
+      || heroDraft.position_y !== overview.login_hero.position_y
+      || heroDraft.zoom !== overview.login_hero.zoom;
     return (
       <div className="flex flex-1 flex-col gap-6 overflow-auto bg-background p-4 sm:p-6 lg:p-8">
+        <Card>
+          <CardHeader><CardTitle>登录页宣传图</CardTitle><CardDescription>右侧图片区域沿用 shadcn 官方登录页布局；未上传时显示官方式灰色占位。</CardDescription><CardAction><Badge variant={heroDraft.url ? "secondary" : "outline"}>{heroDraft.url ? "自定义" : "默认"}</Badge></CardAction></CardHeader>
+          <CardContent className="grid items-start gap-6 lg:grid-cols-[minmax(280px,28rem)_1fr]">
+            <div className="relative aspect-[4/5] w-full max-w-sm justify-self-center overflow-hidden rounded-xl border bg-muted">
+              <LoginHeroImage config={heroDraft} editable={canManageLoginHero} onPositionChange={({ x, y }) => setLoginHeroDraft((current) => ({ ...(current ?? overview.login_hero), position_x: x, position_y: y }))} />
+              {heroDraft.url && <span className="pointer-events-none absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full bg-background/85 px-3 py-1 text-xs text-foreground shadow-sm backdrop-blur">拖动图片调整展示区域</span>}
+            </div>
+            <FieldGroup>
+              <Field data-disabled={!canManageLoginHero}>
+                <FieldContent><FieldTitle>更换封面图</FieldTitle><FieldDescription>建议使用竖向或接近方形的图片。仅支持 JPEG、PNG、WebP，最大 5 MB。</FieldDescription></FieldContent>
+              </Field>
+              <Field data-disabled={!canManageLoginHero || !heroDraft.url}>
+                <div className="flex items-center justify-between gap-4"><FieldLabel htmlFor="login-hero-zoom">图片缩放</FieldLabel><span className="text-sm tabular-nums text-muted-foreground">{heroDraft.zoom.toFixed(1)}×</span></div>
+                <Slider id="login-hero-zoom" min={1} max={3} step={0.1} value={[heroDraft.zoom]} disabled={!canManageLoginHero || loginHeroBusy || !heroDraft.url} onValueChange={(value) => setLoginHeroDraft((current) => ({ ...(current ?? overview.login_hero), zoom: value[0] ?? 1 }))} />
+                <FieldDescription>放大后拖动图片，选择登录页实际展示的部分。</FieldDescription>
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Input ref={loginHeroInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" disabled={!canManageLoginHero || loginHeroBusy} onChange={(event) => void uploadLoginHero(event)} />
+                <Button variant="outline" disabled={!canManageLoginHero || loginHeroBusy} onClick={() => loginHeroInputRef.current?.click()}>{loginHeroBusy && <Spinner data-icon="inline-start" />}{!loginHeroBusy && <ImageUp data-icon="inline-start" />}{heroDraft.url ? "更换图片" : "上传图片"}</Button>
+                <Button disabled={!canManageLoginHero || loginHeroBusy || !heroDraft.url || !heroPlacementChanged} onClick={() => void saveLoginHeroPlacement()}>保存取景</Button>
+                <Button variant="ghost" disabled={!canManageLoginHero || loginHeroBusy || !heroDraft.url} onClick={() => void resetLoginHero()}><RotateCcw data-icon="inline-start" />恢复默认</Button>
+              </div>
+              {!canManageLoginHero && <Alert><AlertDescription>只有超级管理员可以修改登录页宣传图。</AlertDescription></Alert>}
+            </FieldGroup>
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>注册策略</CardTitle><CardDescription>控制玩家登录页是否允许访客自行创建 PokerNode 账号。</CardDescription><CardAction><Badge variant={overview.registration_enabled ? "secondary" : "outline"}>{overview.registration_enabled ? "开放" : "已关闭"}</Badge></CardAction></CardHeader>
           <CardContent>

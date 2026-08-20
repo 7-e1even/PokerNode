@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
-  <title id="title">PokerNode chip network logo</title>
-  <desc id="desc">A poker chip containing a connected network</desc>
-  <rect width="64" height="64" rx="18" fill="#17181c"/>
-  <circle cx="32" cy="32" r="19" fill="none" stroke="#fff" stroke-width="3"/>
-  <circle cx="32" cy="32" r="13" fill="none" stroke="#fff" stroke-dasharray="4 5" stroke-linecap="round" stroke-width="2.5"/>
-  <path d="m25 36 7-9 7 9M25 36h14" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"/>
-  <g fill="#fff"><circle cx="25" cy="36" r="2.5"/><circle cx="32" cy="27" r="2.5"/><circle cx="39" cy="36" r="2.5"/></g>
-</svg>

@@ -10,6 +10,10 @@ describe("parseRoute", () => {
     });
   });
 
+  it("parses the personal settings URL", () => {
+    expect(parseRoute("/settings")).toEqual({ page: "settings" });
+  });
+
   it("rejects malformed URI encoding without throwing", () => {
     expect(parseRoute("/channels/%E0%A4%A")).toEqual({ page: "not_found" });
   });

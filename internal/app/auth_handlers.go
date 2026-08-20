@@ -6,8 +6,12 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,7 @@ import (
 var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,24}$`)
 
 const (
+	maxAvatarBytes     = 2 << 20
 	wechatProviderName = "wechat"
 	wechatStateCookie  = "pokernode_wechat_state"
 	wechatFlowCookie   = "pokernode_wechat_flow"
@@ -48,6 +53,10 @@ type credentialsInput struct {
 	Username        string `json:"username"`
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+type profileInput struct {
+	DisplayName string `json:"display_name"`
 }
 
 type authenticatedUser struct {
@@ -93,10 +102,46 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{
+	loginHeroConfig, err := s.store.LoginHeroImageConfig(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
 		"registration_enabled": enabled,
 		"wechat_login_enabled": s.wechat != nil,
+		"login_hero":           loginHeroImagePayload(loginHeroConfig),
 	})
+}
+
+func (s *Server) handleLoginHeroImage(w http.ResponseWriter, r *http.Request) {
+	asset, err := s.store.LoginHeroImage(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", asset.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(asset.Data)))
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(asset.Data)
+}
+
+func loginHeroImageURL(version string) string {
+	if version == "" {
+		return ""
+	}
+	return "/api/branding/login-hero?v=" + url.QueryEscape(version)
+}
+
+func loginHeroImagePayload(config store.LoginHeroImageConfig) map[string]any {
+	return map[string]any{
+		"url":        loginHeroImageURL(config.UpdatedAt),
+		"position_x": config.PositionX,
+		"position_y": config.PositionY,
+		"zoom":       config.Zoom,
+	}
 }
 
 func (s *Server) handleWeChatStart(w http.ResponseWriter, r *http.Request) {
@@ -214,10 +259,12 @@ func (s *Server) clearWeChatCookies(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) redirectWeChatResult(w http.ResponseWriter, r *http.Request, flow, result string) {
 	parameter := "wechat_error"
+	path := "/"
 	if flow == wechatFlowLink {
 		parameter = "wechat_link"
+		path = "/settings"
 	}
-	http.Redirect(w, r, "/?"+parameter+"="+result, http.StatusFound)
+	http.Redirect(w, r, path+"?"+parameter+"="+result, http.StatusFound)
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -315,6 +362,112 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, user store.Use
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": presented})
 	return nil
+}
+
+func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request, user store.User) error {
+	var input profileInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	if input.DisplayName == "" {
+		return &apiError{Status: http.StatusBadRequest, Message: "显示名称不能为空"}
+	}
+	if len([]rune(input.DisplayName)) > 32 {
+		return &apiError{Status: http.StatusBadRequest, Message: "显示名称不能超过 32 个字符"}
+	}
+	if err := s.store.UpdateUserProfile(r.Context(), user.ID, input.DisplayName); err != nil {
+		return err
+	}
+	user.DisplayName = input.DisplayName
+	presented, err := s.presentUser(r.Context(), user)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": presented})
+	return nil
+}
+
+func (s *Server) handleUpdateAvatar(w http.ResponseWriter, r *http.Request, user store.User) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarBytes+(64<<10))
+	if err := r.ParseMultipartForm(maxAvatarBytes); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "头像不能超过 2 MB"}
+		}
+		return &apiError{Status: http.StatusBadRequest, Message: "头像上传格式不正确"}
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, _, err := r.FormFile("avatar")
+	if err != nil {
+		return &apiError{Status: http.StatusBadRequest, Message: "请选择头像文件"}
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxAvatarBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return &apiError{Status: http.StatusBadRequest, Message: "头像文件不能为空"}
+	}
+	if len(data) > maxAvatarBytes {
+		return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "头像不能超过 2 MB"}
+	}
+	contentType := http.DetectContentType(data)
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" && contentType != "image/gif" {
+		return &apiError{Status: http.StatusUnsupportedMediaType, Message: "只支持 JPG、PNG、WebP 或 GIF 头像"}
+	}
+	avatarURL := fmt.Sprintf("/api/users/%d/avatar?v=%d", user.ID, time.Now().UTC().UnixNano())
+	if err := s.store.UpdateUserAvatar(r.Context(), user.ID, avatarURL, contentType, data); err != nil {
+		return err
+	}
+	user.AvatarURL = avatarURL
+	presented, err := s.presentUser(r.Context(), user)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": presented})
+	return nil
+}
+
+func (s *Server) handleDeleteAvatar(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.store.ClearUserAvatar(r.Context(), user.ID); err != nil {
+		return err
+	}
+	user.AvatarURL = ""
+	presented, err := s.presentUser(r.Context(), user)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": presented})
+	return nil
+}
+
+func (s *Server) handleUserAvatar(w http.ResponseWriter, r *http.Request, _ store.User) error {
+	userID, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
+	if err != nil || userID <= 0 {
+		return &apiError{Status: http.StatusBadRequest, Message: "用户 ID 无效"}
+	}
+	avatar, err := s.store.UserAvatar(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	if len(avatar.Data) > 0 && strings.HasPrefix(avatar.ContentType, "image/") {
+		w.Header().Set("Cache-Control", "private, no-cache")
+		w.Header().Set("Content-Type", avatar.ContentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(avatar.Data)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(avatar.Data)
+		return nil
+	}
+	if strings.HasPrefix(avatar.URL, "https://") || strings.HasPrefix(avatar.URL, "http://") {
+		http.Redirect(w, r, avatar.URL, http.StatusTemporaryRedirect)
+		return nil
+	}
+	return &apiError{Status: http.StatusNotFound, Message: "头像不存在"}
 }
 
 func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request, user store.User) error {

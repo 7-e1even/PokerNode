@@ -8,18 +8,20 @@ import BalanceManager from "./BalanceManager";
 import { Spinner } from "@/components/ui/spinner";
 import { BrandMark } from "@/components/brand-mark";
 import type { AdminSection } from "@/components/app-sidebar";
-import type { Space, User } from "./types";
+import { DEFAULT_LOGIN_HERO_CONFIG, type LoginHeroConfig, type Space, type User } from "./types";
 
 const AdminAuthScreen = lazy(() => import("./AdminAuthScreen"));
 const AdminDashboard = lazy(() => import("./AdminDashboard"));
 const ChannelRoom = lazy(() => import("./ChannelRoom"));
 const Dashboard = lazy(() => import("./Dashboard"));
+const SettingsPage = lazy(() => import("./SettingsPage"));
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [wechatLoginEnabled, setWechatLoginEnabled] = useState(false);
+  const [loginHero, setLoginHero] = useState<LoginHeroConfig>(DEFAULT_LOGIN_HERO_CONFIG);
   const [loading, setLoading] = useState(true);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState("");
@@ -34,12 +36,13 @@ export default function App() {
   useEffect(() => {
     Promise.allSettled([
       api<{ user: User }>("/api/me"),
-      api<{ registration_enabled: boolean; wechat_login_enabled: boolean }>("/api/config"),
+      api<{ registration_enabled: boolean; wechat_login_enabled: boolean; login_hero: LoginHeroConfig }>("/api/config"),
     ]).then(([session, config]) => {
       setUser(session.status === "fulfilled" ? session.value.user : null);
       if (config.status === "fulfilled") {
         setRegistrationEnabled(config.value.registration_enabled);
         setWechatLoginEnabled(config.value.wechat_login_enabled);
+        setLoginHero(config.value.login_hero || DEFAULT_LOGIN_HERO_CONFIG);
       }
     }).finally(() => setLoading(false));
   }, []);
@@ -101,15 +104,29 @@ export default function App() {
           section={route.page === "admin" ? route.section : "overview"}
           onSectionChanged={(section) => navigate(adminPath(section))}
           onOpenLobby={() => navigate("/channels")}
-          onUserUpdated={setUser}
+          onOpenSettings={() => navigate("/settings")}
           onRegistrationChanged={setRegistrationEnabled}
+          onLoginHeroChanged={setLoginHero}
           onLogout={() => { setUser(null); navigate("/admin/login", true); }}
         />
       </Suspense>
     );
   }
 
-  if (!user) return <AuthScreen registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} onAuthenticated={setUser} />;
+  if (!user) return <AuthScreen registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} loginHero={loginHero} onAuthenticated={setUser} />;
+
+  if (route.page === "settings") {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <SettingsPage
+          user={user}
+          wechatLoginEnabled={wechatLoginEnabled}
+          onBack={() => { if (window.history.length > 1) window.history.back(); else navigate("/", true); }}
+          onUpdated={setUser}
+        />
+      </Suspense>
+    );
+  }
 
   if (route.page === "account_bindings") {
     return <AccountBindings onBack={() => navigate("/channels")} onOpenSpace={(spaceID) => navigate(`/channels/${spaceID}`)} />;
@@ -147,15 +164,14 @@ export default function App() {
     <Suspense fallback={<RouteLoading />}><Dashboard
       user={user}
       view={route.page === "channel_list" ? "channels" : "ranking"}
-      wechatLoginEnabled={wechatLoginEnabled}
       onViewChange={(view) => navigate(view === "ranking" ? "/" : "/channels")}
       onOpenBindings={() => navigate("/account/bindings")}
+      onOpenSettings={() => navigate("/settings")}
       onOpenSpace={(space) => {
         setSelectedSpace(space);
         navigate(`/channels/${space.id}`);
       }}
       onOpenAdmin={hasPermission(user, "admin:view") ? () => navigate("/admin") : undefined}
-      onUserUpdated={setUser}
       onLogout={() => {
         setSelectedSpace(null);
         setUser(null);
@@ -168,6 +184,7 @@ export default function App() {
 type AppRoute =
   | { page: "ranking" }
   | { page: "channel_list" }
+  | { page: "settings" }
   | { page: "account_bindings" }
   | { page: "admin_login" }
   | { page: "admin"; section: AdminSection }
@@ -184,6 +201,7 @@ export function parseRoute(pathname: string): AppRoute {
   }
   if (parts.length === 0) return { page: "ranking" };
   if (parts.length === 1 && parts[0] === "channels") return { page: "channel_list" };
+  if (parts.length === 1 && parts[0] === "settings") return { page: "settings" };
   if (parts.length === 2 && parts[0] === "account" && parts[1] === "bindings") return { page: "account_bindings" };
   if (parts[0] === "admin") {
     if (parts.length === 1) return { page: "admin", section: "overview" };

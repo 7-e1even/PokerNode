@@ -48,6 +48,25 @@ type User struct {
 	JoinedSpaceIDs  []string `json:"joined_space_ids,omitempty"`
 }
 
+type UserAvatar struct {
+	URL         string
+	ContentType string
+	Data        []byte
+}
+
+type AppAsset struct {
+	ContentType string
+	Data        []byte
+	UpdatedAt   string
+}
+
+type LoginHeroImageConfig struct {
+	UpdatedAt string
+	PositionX float64
+	PositionY float64
+	Zoom      float64
+}
+
 func (u User) HasPassword() bool {
 	return u.PasswordHash != externalLoginPasswordHash
 }
@@ -135,6 +154,16 @@ type ChannelLeaderboardEntry struct {
 	Sessions    int    `json:"sessions"`
 }
 
+type SpaceMessage struct {
+	ID          int64  `json:"id"`
+	SpaceID     string `json:"space_id"`
+	UserID      int64  `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	Body        string `json:"body"`
+	CreatedAt   string `json:"created_at"`
+}
+
 type AdminSpaceSummary struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
@@ -202,6 +231,8 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL,
   display_name TEXT NOT NULL,
   avatar_url TEXT NOT NULL DEFAULT '',
+  avatar_data BYTEA,
+  avatar_content_type TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'player',
   status TEXT NOT NULL DEFAULT 'active',
@@ -227,6 +258,15 @@ CREATE TABLE IF NOT EXISTS mcp_keys (
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_assets (
+  key TEXT PRIMARY KEY,
+  content_type TEXT NOT NULL,
+  data BYTEA NOT NULL,
+  position_x DOUBLE PRECISION NOT NULL DEFAULT 50,
+  position_y DOUBLE PRECISION NOT NULL DEFAULT 50,
+  zoom DOUBLE PRECISION NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS spaces (
@@ -263,6 +303,14 @@ CREATE TABLE IF NOT EXISTS space_managers (
   PRIMARY KEY (space_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS space_managers_user_idx ON space_managers(user_id, space_id);
+CREATE TABLE IF NOT EXISTS space_messages (
+  id BIGSERIAL PRIMARY KEY,
+  space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS space_messages_space_idx ON space_messages(space_id, id DESC);
 CREATE TABLE IF NOT EXISTS wallet_operations (
   id TEXT PRIMARY KEY,
   space_id TEXT NOT NULL REFERENCES spaces(id),
@@ -311,7 +359,22 @@ CREATE INDEX IF NOT EXISTS active_table_seats_table_idx ON active_table_seats(sp
 	if err := s.ensureColumn("users", "avatar_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.ensureColumn("users", "avatar_data", "BYTEA"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("users", "avatar_content_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := s.ensureColumn("users", "agent_control_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("app_assets", "position_x", "DOUBLE PRECISION NOT NULL DEFAULT 50"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("app_assets", "position_y", "DOUBLE PRECISION NOT NULL DEFAULT 50"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("app_assets", "zoom", "DOUBLE PRECISION NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("wallet_operations", "table_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -431,7 +494,7 @@ func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displ
 	err = tx.QueryRowContext(ctx, `SELECT user_id FROM auth_identities WHERE provider=$1 AND subject=$2`, provider, subject).Scan(&existingUserID)
 	if err == nil {
 		if avatarURL = strings.TrimSpace(avatarURL); avatarURL != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2`, avatarURL, existingUserID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2 AND avatar_data IS NULL`, avatarURL, existingUserID); err != nil {
 				return User{}, err
 			}
 		}
@@ -526,7 +589,7 @@ func (s *Store) BindExternalIdentity(ctx context.Context, userID int64, provider
 		return err
 	}
 	if avatarURL = strings.TrimSpace(avatarURL); avatarURL != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2`, avatarURL, userID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2 AND avatar_data IS NULL`, avatarURL, userID); err != nil {
 			return err
 		}
 	}
@@ -790,6 +853,58 @@ func (s *Store) UpdateUserCredentials(ctx context.Context, userID int64, usernam
 	return nil
 }
 
+func (s *Store) UpdateUserProfile(ctx context.Context, userID int64, displayName string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET display_name=$1 WHERE id=$2`, displayName, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpdateUserAvatar(ctx context.Context, userID int64, avatarURL, contentType string, data []byte) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET avatar_url=$1,avatar_content_type=$2,avatar_data=$3 WHERE id=$4`, avatarURL, contentType, data, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ClearUserAvatar(ctx context.Context, userID int64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET avatar_url='',avatar_content_type='',avatar_data=NULL WHERE id=$1`, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UserAvatar(ctx context.Context, userID int64) (UserAvatar, error) {
+	var avatar UserAvatar
+	err := s.db.QueryRowContext(ctx, `SELECT avatar_url,avatar_content_type,COALESCE(avatar_data,''::bytea) FROM users WHERE id=$1`, userID).
+		Scan(&avatar.URL, &avatar.ContentType, &avatar.Data)
+	return avatar, mapNotFound(err)
+}
+
 func (s *Store) SetUserRankingHidden(ctx context.Context, userID int64, hidden bool) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE users SET ranking_hidden=$1 WHERE id=$2`, hidden, userID)
 	if err != nil {
@@ -948,6 +1063,56 @@ func (s *Store) SetRegistrationEnabled(ctx context.Context, enabled bool) error 
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE app_settings SET value=$1,updated_at=$2 WHERE key='registration_enabled'`, value, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) SetLoginHeroImage(ctx context.Context, contentType string, data []byte) (string, error) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO app_assets(key,content_type,data,position_x,position_y,zoom,updated_at)
+VALUES('login_hero_image',$1,$2,50,50,1,$3)
+ON CONFLICT(key) DO UPDATE SET content_type=EXCLUDED.content_type,data=EXCLUDED.data,position_x=50,position_y=50,zoom=1,updated_at=EXCLUDED.updated_at`, contentType, data, updatedAt)
+	if err != nil {
+		return "", err
+	}
+	return updatedAt, nil
+}
+
+func (s *Store) DeleteLoginHeroImage(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_assets WHERE key='login_hero_image'`)
+	return err
+}
+
+func (s *Store) LoginHeroImage(ctx context.Context) (AppAsset, error) {
+	var asset AppAsset
+	err := s.db.QueryRowContext(ctx, `SELECT content_type,data,updated_at FROM app_assets WHERE key='login_hero_image'`).Scan(&asset.ContentType, &asset.Data, &asset.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AppAsset{}, ErrNotFound
+	}
+	return asset, err
+}
+
+func (s *Store) LoginHeroImageConfig(ctx context.Context) (LoginHeroImageConfig, error) {
+	config := LoginHeroImageConfig{PositionX: 50, PositionY: 50, Zoom: 1}
+	err := s.db.QueryRowContext(ctx, `SELECT updated_at,position_x,position_y,zoom FROM app_assets WHERE key='login_hero_image'`).Scan(&config.UpdatedAt, &config.PositionX, &config.PositionY, &config.Zoom)
+	if errors.Is(err, sql.ErrNoRows) {
+		return config, nil
+	}
+	return config, err
+}
+
+func (s *Store) UpdateLoginHeroImagePlacement(ctx context.Context, positionX, positionY, zoom float64) (LoginHeroImageConfig, error) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `UPDATE app_assets SET position_x=$1,position_y=$2,zoom=$3,updated_at=$4 WHERE key='login_hero_image'`, positionX, positionY, zoom, updatedAt)
+	if err != nil {
+		return LoginHeroImageConfig{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return LoginHeroImageConfig{}, err
+	}
+	if affected == 0 {
+		return LoginHeroImageConfig{}, ErrNotFound
+	}
+	return LoginHeroImageConfig{UpdatedAt: updatedAt, PositionX: positionX, PositionY: positionY, Zoom: zoom}, nil
 }
 
 func (s *Store) AdminSpaces(ctx context.Context) ([]AdminSpaceSummary, AdminPlatformCounts, error) {
@@ -1125,6 +1290,40 @@ FROM space_members m JOIN users u ON u.id=m.user_id WHERE m.space_id=$1 ORDER BY
 		members = append(members, member)
 	}
 	return members, rows.Err()
+}
+
+func (s *Store) CreateSpaceMessage(ctx context.Context, spaceID string, userID int64, body string) (SpaceMessage, error) {
+	var message SpaceMessage
+	err := s.db.QueryRowContext(ctx, `WITH inserted AS (
+  INSERT INTO space_messages(space_id,user_id,body,created_at) VALUES($1,$2,$3,$4)
+  RETURNING id,space_id,user_id,body,created_at
+)
+SELECT i.id,i.space_id,i.user_id,u.display_name,u.avatar_url,i.body,i.created_at
+FROM inserted i JOIN users u ON u.id=i.user_id`, spaceID, userID, body, time.Now().UTC().Format(time.RFC3339Nano)).
+		Scan(&message.ID, &message.SpaceID, &message.UserID, &message.DisplayName, &message.AvatarURL, &message.Body, &message.CreatedAt)
+	return message, err
+}
+
+func (s *Store) SpaceMessages(ctx context.Context, spaceID string, afterID int64) ([]SpaceMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.space_id,m.user_id,u.display_name,u.avatar_url,m.body,m.created_at
+FROM (
+  SELECT id,space_id,user_id,body,created_at FROM space_messages
+  WHERE space_id=$1 AND id>$2 ORDER BY id DESC LIMIT 100
+) m JOIN users u ON u.id=m.user_id
+ORDER BY m.id`, spaceID, afterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := make([]SpaceMessage, 0)
+	for rows.Next() {
+		var message SpaceMessage
+		if err := rows.Scan(&message.ID, &message.SpaceID, &message.UserID, &message.DisplayName, &message.AvatarURL, &message.Body, &message.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
 }
 
 func (s *Store) BindMember(ctx context.Context, member Member) error {

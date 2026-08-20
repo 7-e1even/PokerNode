@@ -177,4 +177,7 @@ func completeWeChatAuth(t *testing.T, client *http.Client, serverURL, startPath,
 	if result := location.Query().Get("wechat_link"); result != expectedResult {
 		t.Fatalf("wechat link result is %q, want %q", result, expectedResult)
 	}
+	if location.Path != "/settings" {
+		t.Fatalf("wechat link redirected to %q, want /settings", location.Path)
+	}
 }

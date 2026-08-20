@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -69,6 +70,34 @@ func TestUpdateOwnCredentials(t *testing.T) {
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
 		"username": "bob", "display_name": "Bob", "password": "password-2",
 	}, http.StatusCreated, nil)
+	var profileUpdated struct {
+		User authenticatedUser `json:"user"`
+	}
+	requestJSON(t, alice, http.MethodPatch, appServer.URL+"/api/me/profile", map[string]any{
+		"display_name": "Alice Player",
+	}, http.StatusOK, &profileUpdated)
+	if profileUpdated.User.DisplayName != "Alice Player" {
+		t.Fatalf("unexpected updated profile: %#v", profileUpdated.User)
+	}
+	requestAvatar(t, alice, appServer.URL+"/api/me/avatar", "avatar.txt", []byte("not an image"), http.StatusUnsupportedMediaType, nil)
+	pngAvatar := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	requestAvatar(t, alice, appServer.URL+"/api/me/avatar", "avatar.png", pngAvatar, http.StatusOK, &profileUpdated)
+	if !strings.HasPrefix(profileUpdated.User.AvatarURL, "/api/users/"+strconv.FormatInt(profileUpdated.User.ID, 10)+"/avatar?v=") {
+		t.Fatalf("unexpected avatar URL: %q", profileUpdated.User.AvatarURL)
+	}
+	avatarResponse, err := alice.Get(appServer.URL + profileUpdated.User.AvatarURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	avatarBody, _ := io.ReadAll(avatarResponse.Body)
+	avatarResponse.Body.Close()
+	if avatarResponse.StatusCode != http.StatusOK || avatarResponse.Header.Get("Content-Type") != "image/png" || !bytes.Equal(avatarBody, pngAvatar) {
+		t.Fatalf("unexpected avatar response: status=%d content-type=%q body=%v", avatarResponse.StatusCode, avatarResponse.Header.Get("Content-Type"), avatarBody)
+	}
+	requestJSON(t, alice, http.MethodDelete, appServer.URL+"/api/me/avatar", nil, http.StatusOK, &profileUpdated)
+	if profileUpdated.User.AvatarURL != "" {
+		t.Fatalf("avatar URL was not cleared: %q", profileUpdated.User.AvatarURL)
+	}
 
 	credentialsURL := appServer.URL + "/api/me/credentials"
 	requestJSON(t, alice, http.MethodPatch, credentialsURL, map[string]any{
@@ -208,6 +237,31 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "bob", "display_name": "Bob", "password": "password-2"}, http.StatusCreated, nil)
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/spaces/join", map[string]string{"invite_code": createResult.Space.InviteCode}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-token"}, http.StatusOK, nil)
+	var firstMessage struct {
+		Message store.SpaceMessage `json:"message"`
+	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/messages", map[string]string{"body": "今晚八点开局"}, http.StatusCreated, &firstMessage)
+	if firstMessage.Message.UserID != 1 || firstMessage.Message.DisplayName != "Alice" || firstMessage.Message.Body != "今晚八点开局" {
+		t.Fatalf("unexpected first channel message: %#v", firstMessage.Message)
+	}
+	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": "  收到  "}, http.StatusCreated, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": ""}, http.StatusBadRequest, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": strings.Repeat("聊", maxSpaceMessageRunes+1)}, http.StatusBadRequest, nil)
+	var messageList struct {
+		Messages []store.SpaceMessage `json:"messages"`
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/messages", nil, http.StatusOK, &messageList)
+	if len(messageList.Messages) != 2 || messageList.Messages[0].Body != "今晚八点开局" || messageList.Messages[1].Body != "收到" {
+		t.Fatalf("channel messages were not returned in order: %#v", messageList.Messages)
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/messages?after="+strconv.FormatInt(firstMessage.Message.ID, 10), nil, http.StatusOK, &messageList)
+	if len(messageList.Messages) != 1 || messageList.Messages[0].Body != "收到" {
+		t.Fatalf("channel message cursor returned the wrong messages: %#v", messageList.Messages)
+	}
+	outsider := newTestClient(t)
+	requestJSON(t, outsider, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "outsider", "display_name": "Outsider", "password": "password-3"}, http.StatusCreated, nil)
+	requestJSON(t, outsider, http.MethodGet, spacePath+"/messages", nil, http.StatusNotFound, nil)
+	requestJSON(t, outsider, http.MethodPost, spacePath+"/messages", map[string]string{"body": "不应发送"}, http.StatusNotFound, nil)
 	var accountBindings struct {
 		Bindings []accountBindingView `json:"bindings"`
 	}
@@ -1038,6 +1092,58 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	requestJSON(t, admin, http.MethodPatch, appServer.URL+"/api/admin/users/"+strconv.FormatInt(operatorResult.User.ID, 10), map[string]string{"role": "operator", "status": "active"}, http.StatusOK, nil)
 	requestJSON(t, operator, http.MethodGet, appServer.URL+"/api/admin/overview", nil, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "operator", "password": "password-2"}, http.StatusOK, nil)
+
+	var publicConfig struct {
+		LoginHero struct {
+			URL       string  `json:"url"`
+			PositionX float64 `json:"position_x"`
+			PositionY float64 `json:"position_y"`
+			Zoom      float64 `json:"zoom"`
+		} `json:"login_hero"`
+	}
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.LoginHero.URL != "" || publicConfig.LoginHero.PositionX != 50 || publicConfig.LoginHero.PositionY != 50 || publicConfig.LoginHero.Zoom != 1 {
+		t.Fatalf("expected the default login image placeholder, got %#v", publicConfig.LoginHero)
+	}
+	requestMultipartFile(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.txt", []byte("not an image"), http.StatusUnsupportedMediaType, nil)
+	pngCover := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	requestMultipartFile(t, operator, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.png", pngCover, http.StatusForbidden, nil)
+	var uploadedCover struct {
+		LoginHero struct {
+			URL       string  `json:"url"`
+			PositionX float64 `json:"position_x"`
+			PositionY float64 `json:"position_y"`
+			Zoom      float64 `json:"zoom"`
+		} `json:"login_hero"`
+	}
+	requestMultipartFile(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.png", pngCover, http.StatusOK, &uploadedCover)
+	if uploadedCover.LoginHero.URL == "" || uploadedCover.LoginHero.PositionX != 50 || uploadedCover.LoginHero.PositionY != 50 || uploadedCover.LoginHero.Zoom != 1 {
+		t.Fatal("expected uploaded login image URL")
+	}
+	requestJSON(t, operator, http.MethodPatch, appServer.URL+"/api/admin/settings/login-hero", map[string]any{"position_x": 20, "position_y": 70, "zoom": 1.6}, http.StatusForbidden, nil)
+	requestJSON(t, admin, http.MethodPatch, appServer.URL+"/api/admin/settings/login-hero", map[string]any{"position_x": -1, "position_y": 70, "zoom": 1.6}, http.StatusBadRequest, nil)
+	requestJSON(t, admin, http.MethodPatch, appServer.URL+"/api/admin/settings/login-hero", map[string]any{"position_x": 20, "position_y": 70, "zoom": 1.6}, http.StatusOK, &uploadedCover)
+	if uploadedCover.LoginHero.PositionX != 20 || uploadedCover.LoginHero.PositionY != 70 || uploadedCover.LoginHero.Zoom != 1.6 {
+		t.Fatalf("login hero placement was not saved: %#v", uploadedCover.LoginHero)
+	}
+	coverResponse, err := http.Get(appServer.URL + uploadedCover.LoginHero.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverBody, err := io.ReadAll(coverResponse.Body)
+	coverResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coverResponse.StatusCode != http.StatusOK || coverResponse.Header.Get("Content-Type") != "image/png" || coverResponse.Header.Get("X-Content-Type-Options") != "nosniff" || !bytes.Equal(coverBody, pngCover) {
+		t.Fatalf("unexpected login cover response: status=%d type=%q nosniff=%q body=%v", coverResponse.StatusCode, coverResponse.Header.Get("Content-Type"), coverResponse.Header.Get("X-Content-Type-Options"), coverBody)
+	}
+	requestJSON(t, operator, http.MethodDelete, appServer.URL+"/api/admin/settings/login-hero", nil, http.StatusForbidden, nil)
+	requestJSON(t, admin, http.MethodDelete, appServer.URL+"/api/admin/settings/login-hero", nil, http.StatusNoContent, nil)
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.LoginHero.URL != "" || publicConfig.LoginHero.PositionX != 50 || publicConfig.LoginHero.PositionY != 50 || publicConfig.LoginHero.Zoom != 1 {
+		t.Fatalf("expected reset login image config, got %#v", publicConfig.LoginHero)
+	}
 	var customRole struct {
 		Role store.Role `json:"role"`
 	}
@@ -1463,6 +1569,46 @@ func requestJSON(t *testing.T, client *http.Client, method, endpoint string, inp
 	if target != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, target); err != nil {
 			t.Fatalf("decode response: %v: %s", err, body)
+		}
+	}
+}
+
+func requestAvatar(t *testing.T, client *http.Client, endpoint, filename string, data []byte, expectedStatus int, target any) {
+	t.Helper()
+	requestMultipartFile(t, client, http.MethodPut, endpoint, "avatar", filename, data, expectedStatus, target)
+}
+
+func requestMultipartFile(t *testing.T, client *http.Client, method, endpoint, fieldName, filename string, data []byte, expectedStatus int, target any) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, endpoint, &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != expectedStatus {
+		t.Fatalf("%s %s returned %d, want %d: %s", method, endpoint, resp.StatusCode, expectedStatus, responseBody)
+	}
+	if target != nil && len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, target); err != nil {
+			t.Fatalf("decode response: %v: %s", err, responseBody)
 		}
 	}
 }

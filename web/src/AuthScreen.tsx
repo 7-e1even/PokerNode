@@ -1,13 +1,15 @@
 import { LoginForm } from "@/components/login-form"
-import type { User } from "@/types"
+import type { LoginHeroConfig, User } from "@/types"
 
 export default function AuthScreen({
   registrationEnabled,
   wechatLoginEnabled,
+  loginHero,
   onAuthenticated,
 }: {
   registrationEnabled: boolean
   wechatLoginEnabled: boolean
+  loginHero: LoginHeroConfig
   onAuthenticated: (user: User) => void
 }) {
   return (
@@ -16,6 +18,7 @@ export default function AuthScreen({
         <LoginForm
           registrationEnabled={registrationEnabled}
           wechatLoginEnabled={wechatLoginEnabled}
+          loginHero={loginHero}
           onAuthenticated={onAuthenticated}
         />
       </div>

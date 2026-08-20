@@ -8,10 +8,11 @@ export class APIError extends Error {
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const hasJSONBody = !!options.body && !(options.body instanceof FormData);
   const response = await fetch(path, {
     ...options,
     headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(hasJSONBody ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
     },
     credentials: "same-origin",
@@ -32,6 +33,10 @@ export function put<T>(path: string, body: unknown): Promise<T> {
 
 export function patch<T>(path: string, body: unknown): Promise<T> {
   return api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function upload<T>(path: string, body: FormData): Promise<T> {
+  return api<T>(path, { method: "PUT", body });
 }
 
 export function remove(path: string): Promise<void> {
