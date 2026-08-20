@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react-dom": "latest",
+    "vitest": "^4.1.11"
   }
 }

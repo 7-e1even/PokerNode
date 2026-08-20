@@ -4,8 +4,6 @@ import { Button } from "@/components/ui/button";
 import { api } from "./api";
 import AuthScreen from "./AuthScreen";
 import AccountBindings from "./AccountBindings";
-import ChannelRoom from "./ChannelRoom";
-import Dashboard from "./Dashboard";
 import BalanceManager from "./BalanceManager";
 import { Spinner } from "@/components/ui/spinner";
 import { BrandMark } from "@/components/brand-mark";
@@ -14,6 +12,8 @@ import type { Space, User } from "./types";
 
 const AdminAuthScreen = lazy(() => import("./AdminAuthScreen"));
 const AdminDashboard = lazy(() => import("./AdminDashboard"));
+const ChannelRoom = lazy(() => import("./ChannelRoom"));
+const Dashboard = lazy(() => import("./Dashboard"));
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -131,7 +131,7 @@ export default function App() {
       return <BalanceManager spaces={[{ id: selectedSpace.id, name: selectedSpace.name }]} initialSpaceID={selectedSpace.id} onBack={() => navigate(`/channels/${selectedSpace.id}`)} />;
     }
     return (
-      <ChannelRoom
+      <Suspense fallback={<RouteLoading />}><ChannelRoom
         user={user}
         initialSpace={selectedSpace}
         initialTableID={route.tableID}
@@ -139,12 +139,12 @@ export default function App() {
         onNavigateTable={(tableID) => navigate(tableID ? `/channels/${selectedSpace.id}/tables/${tableID}` : `/channels/${selectedSpace.id}`)}
         onOpenBindings={() => navigate("/account/bindings")}
         onOpenBalances={() => navigate(`/channels/${selectedSpace.id}/balances`)}
-      />
+      /></Suspense>
     );
   }
 
   return (
-    <Dashboard
+    <Suspense fallback={<RouteLoading />}><Dashboard
       user={user}
       view={route.page === "channel_list" ? "channels" : "ranking"}
       wechatLoginEnabled={wechatLoginEnabled}
@@ -161,7 +161,7 @@ export default function App() {
         setUser(null);
         navigate("/", true);
       }}
-    />
+    /></Suspense>
   );
 }
 
@@ -175,8 +175,13 @@ type AppRoute =
   | { page: "channel_balances"; channelID: string }
   | { page: "not_found" };
 
-function parseRoute(pathname: string): AppRoute {
-  const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+export function parseRoute(pathname: string): AppRoute {
+  let parts: string[];
+  try {
+    parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return { page: "not_found" };
+  }
   if (parts.length === 0) return { page: "ranking" };
   if (parts.length === 1 && parts[0] === "channels") return { page: "channel_list" };
   if (parts.length === 2 && parts[0] === "account" && parts[1] === "bindings") return { page: "account_bindings" };

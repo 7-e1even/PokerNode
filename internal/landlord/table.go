@@ -214,7 +214,6 @@ func (t *Table) Join(userID int64, name string, buyIn int64) (int, error) {
 	}
 	for seat := range t.state.Seats {
 		if t.state.Seats[seat] == nil {
-			t.clearReadyLocked()
 			t.state.Seats[seat] = &Player{UserID: userID, Name: name, Seat: seat, Stack: buyIn}
 			return seat, nil
 		}
@@ -255,10 +254,10 @@ func (t *Table) Ready(userID int64) (bool, error) {
 		t.state.Seats[seat].Ready = false
 		return false, nil
 	}
-	if len(t.playableSeatsLocked()) != MaxSeats {
-		return false, errors.New("斗地主需要正好三名有筹码的玩家")
-	}
 	t.state.Seats[seat].Ready = true
+	if len(t.playableSeatsLocked()) != MaxSeats {
+		return false, nil
+	}
 	for _, player := range t.state.Seats {
 		if player == nil || !player.Ready {
 			return false, nil
@@ -346,7 +345,7 @@ func (t *Table) Snapshot(viewerID int64) Snapshot {
 		LastPlaySeat: t.state.LastPlaySeat, TrickOpen: t.state.TrickOpen, Multiplier: t.state.Multiplier,
 		ActionTimeoutSeconds: t.state.ActionTimeoutSeconds, ActionDeadlineAt: t.state.ActionDeadlineAt, TurnID: t.state.TurnID,
 		ViewerSeat: viewerSeat, Players: players, RemainingCounts: remainingCounts, Allowed: t.allowedActionsLocked(viewerID),
-		CanStart: viewerSeat >= 0 && t.state.Seats[viewerSeat].Stack > 0 && !t.handActiveLocked() && len(t.playableSeatsLocked()) == MaxSeats,
+		CanStart: viewerSeat >= 0 && t.state.Seats[viewerSeat].Stack > 0 && !t.handActiveLocked(),
 		CanLeave: viewerSeat >= 0 && !t.handActiveLocked(), LastResult: cloneResult(t.state.LastResult),
 	}
 }

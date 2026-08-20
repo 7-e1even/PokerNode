@@ -35,6 +35,34 @@ func TestThreeReadyPlayersStartBidding(t *testing.T) {
 	}
 }
 
+func TestPlayerCanReadyBeforeTableFills(t *testing.T) {
+	table := NewTable("landlord", "斗地主", 100)
+	if _, err := table.Join(1, "Alice", 10_000); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := table.Snapshot(1); !snapshot.CanStart {
+		t.Fatal("a seated player should be able to ready before the table fills")
+	}
+	if started, err := table.Ready(1); err != nil || started {
+		t.Fatalf("early ready should wait for more players: started=%v err=%v", started, err)
+	}
+
+	for userID := int64(2); userID <= 3; userID++ {
+		if _, err := table.Join(userID, "player", 10_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if snapshot := table.Snapshot(1); !snapshot.Players[0].Ready {
+		t.Fatal("joining players should not clear an existing ready state")
+	}
+	if started, err := table.Ready(2); err != nil || started {
+		t.Fatalf("second ready should wait: started=%v err=%v", started, err)
+	}
+	if started, err := table.Ready(3); err != nil || !started {
+		t.Fatalf("last ready should start the hand: started=%v err=%v", started, err)
+	}
+}
+
 func TestReadyPlayerCanCancelBeforeHandStarts(t *testing.T) {
 	table := NewTable("landlord", "斗地主", 100)
 	for userID := int64(1); userID <= 3; userID++ {
@@ -130,9 +158,9 @@ func TestLandlordWinSettlesZeroSumAndCapsLosses(t *testing.T) {
 	table.state.LandlordSeat = 0
 	table.state.HighestBid = 1
 	table.state.Multiplier = 1
-	table.state.Seats[0] = &Player{UserID: 1, Name: "landlord", Seat: 0, Stack: 100, Hand: cards(Three), Landlord: true, Plays: 1}
-	table.state.Seats[1] = &Player{UserID: 2, Name: "farmer-1", Seat: 1, Stack: 100, Hand: cards(Four)}
-	table.state.Seats[2] = &Player{UserID: 3, Name: "farmer-2", Seat: 2, Stack: 200, Hand: cards(Five)}
+	table.state.Seats[0] = &Player{UserID: 1, Name: "landlord", Seat: 0, Stack: 100, Hand: cards(Three), Ready: true, Landlord: true, Plays: 1}
+	table.state.Seats[1] = &Player{UserID: 2, Name: "farmer-1", Seat: 1, Stack: 100, Hand: cards(Four), Ready: true}
+	table.state.Seats[2] = &Player{UserID: 3, Name: "farmer-2", Seat: 2, Stack: 200, Hand: cards(Five), Ready: true}
 
 	if err := table.Act(1, ActionPlay, 0, cards(Three)); err != nil {
 		t.Fatal(err)
@@ -147,6 +175,9 @@ func TestLandlordWinSettlesZeroSumAndCapsLosses(t *testing.T) {
 	stacks := map[int64]int64{}
 	total := int64(0)
 	for _, player := range snapshot.Players {
+		if player.Ready {
+			t.Fatalf("player %d remained ready after the hand completed", player.UserID)
+		}
 		stacks[player.UserID] = player.Stack
 		total += player.Stack
 	}

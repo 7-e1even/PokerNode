@@ -11,6 +11,7 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/utils";
+import { createSnapshotGate, type SnapshotGate } from "@/lib/snapshot-gate";
 import { api, post } from "./api";
 import { BindPanel } from "./PokerRoom";
 import type { Balance, Card as GameCard, LandlordPlayer, LandlordTableEnvelope, LandlordTableState, Membership, Space, TableSummary, User } from "./types";
@@ -30,8 +31,10 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
   const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "offline">("connecting");
   const [rulesOpen, setRulesOpen] = useState(false);
   const onBackRef = useRef(onBack);
+  const snapshotGate = useRef(createSnapshotGate()).current;
 
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+  useEffect(() => { setTable(null); setConnection("connecting"); }, [initialTable.id]);
 
   const loadBalance = useCallback(async () => {
     if (!space.is_bound) return;
@@ -45,18 +48,14 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
 
   const loadRoom = useCallback(async () => {
     try {
-      const [detail, result] = await Promise.all([
-        api<{ space: Space; membership: Membership }>(`/api/spaces/${space.id}`),
-        api<LandlordTableEnvelope>(`/api/spaces/${space.id}/tables/${initialTable.id}`),
-      ]);
+      const detail = await api<{ space: Space; membership: Membership }>(`/api/spaces/${space.id}`);
       setSpace(detail.space);
       setMembership(detail.membership);
-      setTable(result.table);
       if (detail.space.is_bound) void loadBalance();
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : "牌桌加载失败");
     }
-  }, [initialTable.id, loadBalance, space.id]);
+  }, [loadBalance, space.id]);
 
   useEffect(() => { void loadRoom(); }, [loadRoom]);
 
@@ -69,16 +68,23 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
     let reconnectTimer: number | undefined;
     let pollTimer: number | undefined;
     let attempts = 0;
+    let pollInFlight = false;
 
     async function refresh() {
+      if (disposed || pollInFlight) return;
+      const snapshotToken = snapshotGate.beginRead();
+      if (snapshotToken === null) return;
+      pollInFlight = true;
       try {
         const result = await api<LandlordTableEnvelope>(tableURL);
-        if (!disposed) {
+        if (!disposed && snapshotGate.acceptRead(snapshotToken)) {
           setTable(result.table);
           if (socket?.readyState !== WebSocket.OPEN) setConnection("polling");
         }
       } catch {
         if (!disposed && socket?.readyState !== WebSocket.OPEN) setConnection("offline");
+      } finally {
+        pollInFlight = false;
       }
     }
 
@@ -102,7 +108,10 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
       next.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.type === "table") setTable(message.table);
+          if (message.type === "table") {
+            snapshotGate.acceptPush();
+            setTable(message.table);
+          }
           if (message.type === "table_deleted") {
             toast.info("牌桌已被管理员删除");
             onBackRef.current();
@@ -127,13 +136,13 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
       if (pollTimer !== undefined) window.clearInterval(pollTimer);
       socket?.close();
     };
-  }, [initialTable.id, space.id]);
+  }, [initialTable.id, snapshotGate, space.id]);
 
   return (
-    <main className="flex h-svh min-h-0 flex-col overflow-hidden bg-muted/30">
-      <section className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="landlord-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 p-2 sm:p-3">
-          <div className="landlord-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
+    <main className="table-room landlord-room flex h-svh min-h-0 flex-col overflow-hidden">
+      <section className="table-room__canvas relative min-h-0 flex-1 overflow-hidden">
+        <div className="table-room-hud landlord-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2">
+          <div className="table-room-hud__identity landlord-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
             <Button size="icon" variant="ghost" onClick={onBack} aria-label="返回频道"><ArrowLeft /></Button>
             <BrandMark className="size-7 shrink-0" aria-hidden="true" />
             <div className="min-w-0 pl-1">
@@ -142,12 +151,12 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
             </div>
           </div>
 
-          <div className="landlord-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
-            <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">{connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}</Badge>
+          <div className="table-room-hud__actions landlord-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+            <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite"><span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />{connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}</Badge>
             {space.is_bound && (
               <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
                 <CircleDollarSign data-icon="inline-start" />
-                <span className="hidden lg:inline">{balance ? money(balance.cents) : "—"}</span>
+                <span className="hidden md:inline">{balance ? money(balance.cents) : "—"}</span>
               </Button>
             )}
             <DropdownMenu>
@@ -167,7 +176,7 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
           </div>
         </div>
 
-        {table ? <LandlordTable table={table} user={user} spaceID={space.id} tableID={initialTable.id} onChanged={setTable} onBalanceChanged={() => void loadBalance()} /> : <LandlordLoading />}
+        {table ? <LandlordTable table={table} user={user} spaceID={space.id} tableID={initialTable.id} onChanged={setTable} snapshotGate={snapshotGate} onBalanceChanged={() => void loadBalance()} /> : <LandlordLoading />}
         {!space.is_bound && membership && <BindPanel space={space} onBound={(nextMembership, nextBalance) => { setMembership(nextMembership); setBalance(nextBalance); setSpace((current) => ({ ...current, is_bound: true })); toast.success("个人凭证已绑定"); }} />}
       </section>
 
@@ -176,12 +185,13 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
   );
 }
 
-function LandlordTable({ table, user, spaceID, tableID, onChanged, onBalanceChanged }: {
+function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate, onBalanceChanged }: {
   table: LandlordTableState;
   user: User;
   spaceID: string;
   tableID: string;
   onChanged: (table: LandlordTableState) => void;
+  snapshotGate: SnapshotGate;
   onBalanceChanged: () => void;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
@@ -223,17 +233,20 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, onBalanceChan
   }, []);
 
   async function run(path: string, body?: unknown, balanceChanged = false) {
+    const snapshotToken = snapshotGate.beginMutation();
     setBusy(true);
     try {
       const requestBody = path === "action" && body && typeof body === "object"
         ? { ...body, expected_turn_id: table.turn_id }
         : body;
       const result = await post<LandlordTableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, requestBody);
-      onChanged(result.table);
+      if (result.table && snapshotGate.finishMutation(snapshotToken)) onChanged(result.table);
+      else snapshotGate.cancelMutation(snapshotToken);
       setSelected([]);
       if (result.notice) toast.success(result.notice);
       if (balanceChanged) onBalanceChanged();
     } catch (caught) {
+      snapshotGate.cancelMutation(snapshotToken);
       toast.error(caught instanceof Error ? caught.message : "操作失败");
     } finally {
       setBusy(false);
@@ -273,9 +286,19 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, onBalanceChan
     setCardSelected(key, drag.selecting);
   }
 
+  function continueTouchDrag(clientX: number, clientY: number) {
+    const drag = dragSelection.current;
+    if (!drag) return;
+    const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-landlord-card]");
+    const key = target?.dataset.landlordCard;
+    if (!key || drag.visited.has(key)) return;
+    drag.visited.add(key);
+    setCardSelected(key, drag.selecting);
+  }
+
   return (
     <div className="landlord-stage">
-      <div className="landlord-roundbar">
+      <div className="table-room-hud__status landlord-roundbar">
         <div className="landlord-match-chips"><Badge variant="secondary">第 {table.hand_id || 1} 局</Badge><Badge variant="outline">{phaseLabel(table.phase)}</Badge>{table.highest_bid > 0 && <Badge variant="outline">叫分 {table.highest_bid}</Badge>}{table.multiplier > 1 && <Badge>× {table.multiplier}</Badge>}</div>
         <span className="landlord-turn-status" data-active={table.acting_seat >= 0 ? "true" : undefined}><i aria-hidden="true" />{table.acting_seat >= 0 ? <><strong>{acting?.name || "玩家"}</strong><span>行动</span><Clock3 aria-hidden="true" /><b>{seconds ?? table.action_timeout_seconds}</b></> : waitingForDeal ? "等待玩家入座" : "等待下一局"}</span>
       </div>
@@ -308,21 +331,21 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, onBalanceChan
           {viewer ? <>
             <PlayerPanel player={viewer} viewer waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} />
             <div className="landlord-hand" aria-label={`你的手牌，共 ${viewer.card_count} 张`}>
-              <div className="landlord-hand-row" style={{ "--hand-count": Math.max(viewerCards.length, 1) } as CSSProperties}>
+              <div className="landlord-hand-row" style={{ "--hand-count": Math.max(viewerCards.length, 1) } as CSSProperties} onPointerMove={(event) => { if (event.pointerType !== "mouse") continueTouchDrag(event.clientX, event.clientY); }}>
                 {viewerCards.map((card, index, cards) => <LandlordCard key={`${table.hand_id}:${cardKey(card)}`} card={card} selected={selected.includes(cardKey(card))} disabled={!table.allowed_actions.can_play || busy} onClick={() => clickCard(card)} onPointerDown={(event) => { if (event.button === 0) { event.preventDefault(); beginCardDrag(card); } }} onPointerEnter={(event) => continueCardDrag(card, event.buttons)} motion="deal" motionIndex={index} motionX={`${((cards.length - 1) / 2 - index) * 2.1}rem`} />)}
-                {viewer.card_count === 0 && <span className="py-8 text-sm text-muted-foreground">{waitingForDeal ? `等待凑齐 3 人后发牌（${table.players.length}/3）` : table.phase === "complete" ? "本局手牌已出完" : "等待发牌"}</span>}
+                {viewer.card_count === 0 && <span className="landlord-hand-empty py-8 text-sm text-muted-foreground">{waitingForDeal ? `等待凑齐 3 人后发牌（${table.players.length}/3）` : table.phase === "complete" ? "本局手牌已出完" : "等待发牌"}</span>}
               </div>
             </div>
           </> : <div className="landlord-spectator-seat"><Spade /><span><strong>你的座位</strong><small>加入后，手牌会显示在这里</small></span></div>}
         </div>
+      </div>
 
-        <div className={cn("landlord-action-dock", (!seated || !table.allowed_actions.can_act) && "landlord-action-dock--passive")} role="toolbar" aria-label="牌局操作">
-          {!seated && <><div className="flex min-w-44 flex-col gap-1 px-2"><div className="flex items-center justify-between text-xs"><span className="text-muted-foreground">买入</span><strong>{money(buyIn)}</strong></div><Slider aria-label="买入金额" min={2_000} max={100_000} step={500} value={[buyIn]} onValueChange={(value) => setBuyIn(value[0])} /></div><Button className="landlord-primary-action rounded-full" size="lg" disabled={busy} onClick={() => void run("join", { buy_in_cents: buyIn }, true)}>{busy && <Spinner data-icon="inline-start" />}{busy ? "处理中…" : "加入牌桌"}</Button></>}
-          {seated && table.allowed_actions.can_bid && <><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid: 0 })}>不叫</Button>{[1, 2, 3].filter((bid) => bid >= table.allowed_actions.min_bid).map((bid) => <Button key={bid} size="lg" className="landlord-primary-action rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid })}>{bid} 分</Button>)}</>}
-          {seated && table.allowed_actions.can_play && <><span className="landlord-selection-hint">按住牌面拖动多选</span><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge>{table.allowed_actions.can_pass && <Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "pass" })}>不出</Button>}<Button size="lg" className="landlord-primary-action min-w-28 rounded-full" disabled={busy || selectedCards.length === 0} onClick={() => void run("action", { action: "play", cards: selectedCards })}><Play data-icon="inline-start" />出牌 {selectedCards.length > 0 ? `(${selectedCards.length})` : ""}</Button></>}
-          {seated && !table.allowed_actions.can_act && !table.can_start && table.can_leave && <><span className="px-2 text-sm text-muted-foreground">等待玩家 {table.players.length}/3</span><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button></>}
-          {seated && table.can_start && <><div className="px-2 text-sm text-muted-foreground">{table.players.length < 3 ? `等待玩家 ${table.players.length}/3` : `已准备 ${table.players.filter((player) => player.ready).length}/3`}</div>{table.can_leave && <Button variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}<Button size="lg" variant={viewer?.ready ? "outline" : "default"} className={cn("rounded-full", !viewer?.ready && "landlord-primary-action")} disabled={busy} onClick={() => void run("ready")}>{busy ? <Spinner data-icon="inline-start" /> : viewer?.ready ? <X data-icon="inline-start" /> : <Check data-icon="inline-start" />}{busy ? "处理中…" : viewer?.ready ? "取消准备" : "准备"}</Button></>}
-        </div>
+      <div className={cn("table-action-surface landlord-action-dock", !seated && "landlord-action-dock--join", (!seated || !table.allowed_actions.can_act) && "landlord-action-dock--passive")} role="toolbar" aria-label="牌局操作">
+        {!seated && <><div className="landlord-buy-in flex min-w-44 flex-col gap-1 px-2"><div className="flex items-center justify-between text-xs"><span className="text-muted-foreground">坐下买入</span><strong>{money(buyIn)}</strong></div><Slider aria-label="买入金额" min={2_000} max={100_000} step={500} value={[buyIn]} onValueChange={(value) => setBuyIn(value[0])} /></div><Button className="landlord-primary-action rounded-full" size="lg" disabled={busy} onClick={() => void run("join", { buy_in_cents: buyIn }, true)}>{busy && <Spinner data-icon="inline-start" />}{busy ? "处理中…" : "加入牌桌"}</Button></>}
+        {seated && table.allowed_actions.can_bid && <><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid: 0 })}>不叫</Button>{[1, 2, 3].filter((bid) => bid >= table.allowed_actions.min_bid).map((bid) => <Button key={bid} size="lg" className="landlord-primary-action rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid })}>{bid} 分</Button>)}</>}
+        {seated && table.allowed_actions.can_play && <><span className="landlord-selection-hint">按住牌面拖动多选</span><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge>{table.allowed_actions.can_pass && <Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "pass" })}>不出</Button>}<Button size="lg" className="landlord-primary-action min-w-28 rounded-full" disabled={busy || selectedCards.length === 0} onClick={() => void run("action", { action: "play", cards: selectedCards })}><Play data-icon="inline-start" />出牌 {selectedCards.length > 0 ? `(${selectedCards.length})` : ""}</Button></>}
+        {seated && !table.allowed_actions.can_act && !table.can_start && table.can_leave && <><span className="px-2 text-sm text-muted-foreground">等待玩家 {table.players.length}/3</span><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button></>}
+        {seated && table.can_start && <><div className="px-2 text-sm text-muted-foreground">{table.players.length < 3 ? `等待玩家 ${table.players.length}/3` : `已准备 ${table.players.filter((player) => player.ready).length}/3`}</div>{table.can_leave && <Button variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}<Button size="lg" variant={viewer?.ready ? "outline" : "default"} className={cn("rounded-full", !viewer?.ready && "landlord-primary-action")} disabled={busy} onClick={() => void run("ready")}>{busy ? <Spinner data-icon="inline-start" /> : viewer?.ready ? <X data-icon="inline-start" /> : <Check data-icon="inline-start" />}{busy ? "处理中…" : viewer?.ready ? "取消准备" : "准备"}</Button></>}
       </div>
     </div>
   );
@@ -368,7 +391,7 @@ function LandlordCard({ card, selected = false, compact = false, disabled = fals
   const suit = joker ? "王" : ["♣", "♦", "♥", "♠"][card.suit];
   const motionStyle = { ...style, "--motion-index": motionIndex, "--motion-x": motionX, zIndex: motionIndex + 1 } as CSSProperties;
   return (
-    <button type="button" className={cn("landlord-playing-card", compact ? "landlord-playing-card--compact" : "landlord-playing-card--hand", red && "text-destructive", selected && "landlord-playing-card--selected", disabled && "cursor-default")} disabled={disabled} onClick={onClick} onPointerDown={onPointerDown} onPointerEnter={onPointerEnter} style={motionStyle} data-motion={motion} data-origin={motionOrigin} aria-pressed={onClick ? selected : undefined} aria-label={`${rank}${suit}`}>
+    <button type="button" className={cn("landlord-playing-card", compact ? "landlord-playing-card--compact" : "landlord-playing-card--hand", red && "text-destructive", selected && "landlord-playing-card--selected", disabled && "cursor-default")} disabled={disabled} onClick={onClick} onPointerDown={onPointerDown} onPointerEnter={onPointerEnter} style={motionStyle} data-motion={motion} data-origin={motionOrigin} data-landlord-card={cardKey(card)} aria-pressed={onClick ? selected : undefined} aria-label={`${rank}${suit}`}>
       <span className="landlord-card-turn">
         <span className="landlord-card-face"><strong className="leading-none">{rank}</strong><span className="leading-none">{suit}</span>{joker && <span className="mt-auto self-end text-[0.55rem] font-medium uppercase">Joker</span>}</span>
         {motion === "reveal" && <span className="landlord-card-motion-back" aria-hidden="true"><BrandMark /></span>}

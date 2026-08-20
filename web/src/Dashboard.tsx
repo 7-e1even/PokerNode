@@ -134,6 +134,7 @@ export default function Dashboard({ user, view, wechatLoginEnabled, onViewChange
             className="flex min-h-0 flex-1 border-0"
             view={view}
             spaces={spaces}
+            connected={!error && !leaderboardError}
             onViewChange={(nextView) => { setMobileOpen(false); onViewChange(nextView); }}
             onOpenSpace={openSpace}
             onCreate={() => { setMobileOpen(false); setDialog("create"); }}
@@ -172,7 +173,7 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
   return (
     <header className="game-topbar flex h-16 shrink-0 items-center justify-between gap-4 px-3 sm:px-6">
       <div className="flex min-w-0 items-center gap-2 sm:gap-4">
-        <Button size="icon" variant="secondary" className="md:hidden" onClick={onOpenMenu} aria-label="打开游戏导航"><Menu /></Button>
+        <Button size="icon" variant="secondary" className="min-h-11 min-w-11 md:hidden" onClick={onOpenMenu} aria-label="打开游戏导航"><Menu /></Button>
         <div className="flex min-w-0 items-center gap-3">
           <BrandMark className="size-10" aria-hidden="true" />
           <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">PokerNode</strong><small className="block truncate">Friends Game Hall</small></span>
@@ -193,10 +194,11 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
   );
 }
 
-function LobbySidebar({ className, view, spaces, onViewChange, onOpenSpace, onCreate, onJoin }: {
+function LobbySidebar({ className, view, spaces, connected, onViewChange, onOpenSpace, onCreate, onJoin }: {
   className?: string;
   view: "ranking" | "channels";
   spaces: Space[];
+  connected: boolean;
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenSpace: (space: Space) => void;
   onCreate: () => void;
@@ -206,19 +208,19 @@ function LobbySidebar({ className, view, spaces, onViewChange, onOpenSpace, onCr
     <aside className={cn("min-h-0 flex-col border-r bg-card", className)}>
       <div className="flex flex-col gap-2 p-4">
         <p className="text-xs font-medium text-muted-foreground">快速开始</p>
-        <div className="grid grid-cols-2 gap-2"><Button onClick={onCreate}><Plus data-icon="inline-start" />创建</Button><Button variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />加入</Button></div>
+        <div className="grid grid-cols-2 gap-2"><Button className="min-h-11" onClick={onCreate}><Plus data-icon="inline-start" />创建</Button><Button className="min-h-11" variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />加入</Button></div>
       </div>
       <Separator />
       <div className="flex flex-col gap-1 p-3">
-        <Button className="justify-start" variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
-        <Button className="justify-start" variant={view === "channels" ? "secondary" : "ghost"} onClick={() => onViewChange("channels")}><Gamepad2 data-icon="inline-start" />进入平台</Button>
+        <Button className="min-h-11 justify-start" variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
+        <Button className="min-h-11 justify-start" variant={view === "channels" ? "secondary" : "ghost"} onClick={() => onViewChange("channels")}><Gamepad2 data-icon="inline-start" />进入平台</Button>
       </div>
       <Separator />
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-3"><LobbySidebarGroup label="我的频道" spaces={spaces} empty="还没有频道" onOpenSpace={onOpenSpace} /></div>
       </ScrollArea>
       <Separator />
-      <div className="p-4"><div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="relative flex size-2"><span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-50 motion-reduce:animate-none" /><span className="relative inline-flex size-2 rounded-full bg-primary" /></span><span>服务运行正常</span></div></div>
+      <div className="p-4"><div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="relative flex size-2"><span className={cn("relative inline-flex size-2 rounded-full", connected ? "bg-primary" : "bg-destructive")} /></span><span>{connected ? "大厅数据已连接" : "大厅数据暂不可用"}</span></div></div>
     </aside>
   );
 }
@@ -283,8 +285,8 @@ function ChannelPickerView({ spaces, loading, error, onCreate, onJoin, onOpenSpa
               <p className="text-sm leading-6 text-muted-foreground">进入频道后选择牌桌，查看在线牌友和频道内的实时排名。</p>
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
-              <Button onClick={onCreate}><Plus data-icon="inline-start" />创建频道</Button>
+              <Button className="min-h-11 lg:min-h-8" variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
+              <Button className="min-h-11 lg:min-h-8" onClick={onCreate}><Plus data-icon="inline-start" />创建频道</Button>
             </div>
           </header>
 
@@ -367,7 +369,7 @@ function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
         <RadioTower className="shrink-0 text-muted-foreground" />
       </CardContent>
       <CardFooter>
-        <Button className="w-full" size="lg" onClick={onOpen}>进入频道<ArrowRight data-icon="inline-end" /></Button>
+        <Button className="min-h-11 w-full" size="lg" onClick={onOpen}>进入频道<ArrowRight data-icon="inline-end" /></Button>
       </CardFooter>
     </Card>
   );

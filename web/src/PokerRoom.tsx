@@ -29,6 +29,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/utils";
+import { createSnapshotGate, type SnapshotGate } from "@/lib/snapshot-gate";
 import { api, post, put } from "./api";
 import type { Balance, Card as PokerCard, KickVote, Membership, Player, Space, TableEnvelope, TableState, TableSummary, User, WalletOperation } from "./types";
 
@@ -67,8 +68,10 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const onBackRef = useRef(onBack);
+  const snapshotGate = useRef(createSnapshotGate()).current;
 
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+  useEffect(() => { setTable(null); setKickVote(null); setConnection("connecting"); }, [initialTable.id]);
 
   const reportError = useCallback((message: string) => toast.error(message), []);
 
@@ -84,19 +87,14 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
 
   const loadRoom = useCallback(async () => {
     try {
-      const [detail, tableResult] = await Promise.all([
-        api<{ space: Space; membership: Membership }>(`/api/spaces/${space.id}`),
-        api<TableEnvelope>(`/api/spaces/${space.id}/tables/${initialTable.id}`),
-      ]);
+      const detail = await api<{ space: Space; membership: Membership }>(`/api/spaces/${space.id}`);
       setSpace(detail.space);
       setMembership(detail.membership);
-      setTable(tableResult.table);
-      setKickVote(tableResult.kick_vote);
       if (detail.space.is_bound) void loadBalance();
     } catch (caught) {
       reportError(caught instanceof Error ? caught.message : "牌桌加载失败");
     }
-  }, [initialTable.id, loadBalance, reportError, space.id]);
+  }, [loadBalance, reportError, space.id]);
 
   useEffect(() => { void loadRoom(); }, [loadRoom]);
 
@@ -113,10 +111,12 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
 
     async function refreshTable() {
       if (disposed || pollInFlight) return;
+      const snapshotToken = snapshotGate.beginRead();
+      if (snapshotToken === null) return;
       pollInFlight = true;
       try {
         const result = await api<TableEnvelope>(tableURL);
-        if (!disposed) {
+        if (!disposed && snapshotGate.acceptRead(snapshotToken)) {
           setTable(result.table);
           setKickVote(result.kick_vote);
           if (socket?.readyState !== WebSocket.OPEN) setConnection("polling");
@@ -163,6 +163,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
         try {
           const message = JSON.parse(event.data);
           if (message.type === "table") {
+            snapshotGate.acceptPush();
             setTable(message.table);
             setKickVote(message.kick_vote ?? null);
           } else if (message.type === "table_deleted") {
@@ -197,7 +198,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
       stopPolling();
       socket?.close();
     };
-  }, [initialTable.id, space.id]);
+  }, [initialTable.id, snapshotGate, space.id]);
 
   const previousViewerSeat = useRef<number | null>(null);
   useEffect(() => {
@@ -209,12 +210,13 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   }, [loadBalance, table]);
 
   return (
-    <main className="poker-room flex h-svh min-h-0 flex-col overflow-hidden">
-      <section className="poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
-        <div className="poker-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2 p-2 sm:p-3">
-          <div className="poker-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
+    <main className="table-room poker-room flex h-svh min-h-0 flex-col overflow-hidden">
+      <section className="table-room__canvas poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
+        <div className="table-room-hud poker-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2">
+          <div className="table-room-hud__identity poker-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
             <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
-            <div className="min-w-0">
+            <BrandMark className="size-7 shrink-0" aria-hidden="true" />
+            <div className="min-w-0 pl-1">
               <h1 className="truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
               <span className="hidden truncate text-xs text-muted-foreground md:block">
                 {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
@@ -223,7 +225,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
           </div>
 
           {table && (
-            <div className="poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/90 px-2 py-1 shadow-sm backdrop-blur-md" aria-live="polite">
+            <div className="table-room-hud__status poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/90 px-2 py-1 shadow-sm backdrop-blur-md" aria-live="polite">
               <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
               <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
               <Separator orientation="vertical" className="h-4" />
@@ -237,7 +239,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
             </div>
           )}
 
-          <div className="poker-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+          <div className="table-room-hud__actions poker-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
             <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
               <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
               {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
@@ -245,7 +247,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
             {space.is_bound && (
               <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
                 <CircleDollarSign data-icon="inline-start" />
-                <span className="hidden sm:inline">{balance ? money(balance.cents) : "—"}</span>
+                <span className="hidden md:inline">{balance ? money(balance.cents) : "—"}</span>
               </Button>
             )}
             <DropdownMenu>
@@ -279,6 +281,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
               setTable(nextTable);
               setKickVote(nextKickVote);
             }}
+            snapshotGate={snapshotGate}
             onBalanceChanged={() => void loadBalance()}
           />
         ) : (
@@ -304,7 +307,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   );
 }
 
-function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChanged, onBalanceChanged }: {
+function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChanged, snapshotGate, onBalanceChanged }: {
   spaceID: string;
   tableID: string;
   table: TableState;
@@ -312,6 +315,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
   user: User;
   onError: (message: string) => void;
   onChanged: (table: TableState, kickVote: KickVote | null) => void;
+  snapshotGate: SnapshotGate;
   onBalanceChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -416,16 +420,19 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
   }, []);
 
   async function run(path: string, body?: unknown, balanceChanged = false) {
+    const snapshotToken = snapshotGate.beginMutation();
     setBusy(true);
     try {
       const requestBody = path === "action" && body && typeof body === "object"
         ? { ...body, expected_turn_id: table.turn_id }
         : body;
       const result = await post<TableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, requestBody);
-      if (result.table) onChanged(result.table, result.kick_vote ?? null);
+      if (result.table && snapshotGate.finishMutation(snapshotToken)) onChanged(result.table, result.kick_vote ?? null);
+      else snapshotGate.cancelMutation(snapshotToken);
       if (result.notice) toast.success(result.notice);
       if (balanceChanged) onBalanceChanged();
     } catch (caught) {
+      snapshotGate.cancelMutation(snapshotToken);
       onError(caught instanceof Error ? caught.message : "操作失败");
     } finally {
       setBusy(false);
@@ -510,7 +517,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
 
       {seated && !allowed.can_act && (
         <ActionCard className={table.can_start ? "w-[min(38rem,calc(100%-2rem))]" : "w-auto"}>
-          <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
+          <div className="poker-waiting-actions flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
             {activeKickVote ? (
               <>
                 <div className="min-w-0 flex-1">
@@ -568,7 +575,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
       {seated && allowed.can_act && (
         <div className="poker-action-region absolute left-1/2 z-10 flex w-[min(46rem,calc(100%-2rem))] -translate-x-1/2 flex-col items-center gap-2">
           {(allowed.can_bet || allowed.can_raise) && (
-            <Card size="sm" className="w-full rounded-2xl py-0 shadow-md sm:rounded-full">
+            <Card size="sm" className="table-action-surface w-full rounded-2xl py-0 shadow-md sm:rounded-full">
               <CardContent className="poker-bet-controls flex flex-wrap items-center gap-2 p-2.5 sm:gap-3">
                 <div className="poker-bet-heading flex w-full flex-col px-1 sm:min-w-28 sm:w-auto">
                   <strong className="text-xs">轮到你行动</strong>
@@ -585,7 +592,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
               </CardContent>
             </Card>
           )}
-          <Card size="sm" className="w-fit max-w-full rounded-2xl py-0 shadow-lg sm:rounded-full">
+          <Card size="sm" className="table-action-surface w-fit max-w-full rounded-2xl py-0 shadow-lg sm:rounded-full">
             <CardContent className="poker-action-buttons flex flex-wrap items-center justify-center gap-2 p-2">
               <Badge variant={(secondsRemaining ?? table.action_timeout_seconds) <= 5 ? "destructive" : "outline"} className="poker-turn-timer h-9 shrink-0 rounded-full px-3 tabular-nums"><Clock3 aria-hidden="true" />剩余 {secondsRemaining ?? table.action_timeout_seconds} 秒</Badge>
               {allowed.can_fold && <Button className="min-w-22 rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("action", { action: "fold", amount_cents: 0 })}>弃牌</Button>}
@@ -621,7 +628,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
 
 function ActionCard({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <Card size="sm" className={cn("poker-action-pod absolute left-1/2 z-10 -translate-x-1/2 gap-0 rounded-2xl py-0", className)}>
+    <Card size="sm" className={cn("table-action-surface poker-action-pod absolute left-1/2 z-10 -translate-x-1/2 gap-0 rounded-2xl py-0", className)}>
       <CardContent className="grid gap-3 p-4">{children}</CardContent>
     </Card>
   );
@@ -762,7 +769,7 @@ export function BindPanel({ space, onBound }: { space: Space; onBound: (member: 
           <FieldGroup className="mt-6">
             <Field>
               <FieldLabel htmlFor="personal-token">个人 System Access Token</FieldLabel>
-              <Input id="personal-token" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="粘贴你的 System Access Token" required autoFocus />
+              <Input id="personal-token" type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="粘贴你的 System Access Token" required />
               <FieldDescription className="flex items-center gap-1.5"><ShieldCheck />AES-256-GCM 加密保存，界面仅展示末四位</FieldDescription>
               <FieldError>{error}</FieldError>
             </Field>

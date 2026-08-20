@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
   ArrowLeft, CircleDollarSign, Clock3, Copy, Crown, Eraser, Link2, Plus, Shuffle, Table2,
   Spade, Trash2, Trophy,
@@ -40,19 +40,40 @@ type RoomPlayer = TableSeatSummary & { tableID: string; tableName: string };
 type TableAdminAction = { mode: "clear" | "delete"; table: TableSummary };
 
 export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBindings, onOpenBalances }: Props) {
+  const [space, setSpace] = useState(initialSpace);
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [leaderboardError, setLeaderboardError] = useState("");
+  const [spaceError, setSpaceError] = useState("");
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [gameType, setGameType] = useState<GameType>("texas_holdem");
   const [tableAdminAction, setTableAdminAction] = useState<TableAdminAction | null>(null);
   const [tableActionBusy, setTableActionBusy] = useState(false);
+  const spaceRequestInFlight = useRef(false);
+  const tablesRequestInFlight = useRef(false);
+  const leaderboardRequestInFlight = useRef(false);
+
+  const loadSpace = useCallback(async () => {
+    if (spaceRequestInFlight.current) return;
+    spaceRequestInFlight.current = true;
+    try {
+      const result = await api<{ space: Space }>(`/api/spaces/${initialSpace.id}`);
+      setSpace(result.space);
+      setSpaceError("");
+    } catch (caught) {
+      setSpaceError(caught instanceof Error ? caught.message : "读取频道信息失败");
+    } finally {
+      spaceRequestInFlight.current = false;
+    }
+  }, [initialSpace.id]);
 
   const loadTables = useCallback(async (showLoading = false) => {
+    if (tablesRequestInFlight.current) return;
+    tablesRequestInFlight.current = true;
     if (showLoading) setLoading(true);
     try {
       const result = await api<{ tables: TableSummary[] }>(`/api/spaces/${initialSpace.id}/tables`);
@@ -61,11 +82,14 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取牌桌失败");
     } finally {
+      tablesRequestInFlight.current = false;
       if (showLoading) setLoading(false);
     }
   }, [initialSpace.id]);
 
   const loadLeaderboard = useCallback(async (showLoading = false) => {
+    if (leaderboardRequestInFlight.current) return;
+    leaderboardRequestInFlight.current = true;
     if (showLoading) setLeaderboardLoading(true);
     try {
       const result = await api<{ leaderboard: ChannelLeaderboardEntry[] }>(`/api/spaces/${initialSpace.id}/leaderboard`);
@@ -74,9 +98,14 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     } catch (caught) {
       setLeaderboardError(caught instanceof Error ? caught.message : "读取频道排名失败");
     } finally {
+      leaderboardRequestInFlight.current = false;
       if (showLoading) setLeaderboardLoading(false);
     }
   }, [initialSpace.id]);
+
+  useEffect(() => { setSpace(initialSpace); }, [initialSpace]);
+
+  useEffect(() => { void loadSpace(); }, [loadSpace]);
 
   useEffect(() => {
     void loadTables(true);
@@ -99,8 +128,10 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     if (target) {
       setGameType(target.game_type);
       setSelectedTable(target);
+    } else if (!loading) {
+      setSelectedTable(null);
+      setError("该牌桌不存在或已不可用");
     }
-    else if (!loading) setError("该牌桌不存在或已不可用");
   }, [initialTableID, loading, tables]);
 
   const gameTables = useMemo(() => tables.filter((table) => table.game_type === gameType), [gameType, tables]);
@@ -112,7 +143,7 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     [gameTables, viewerTable],
   );
   const onlinePlayers = tables.reduce((total, table) => total + table.player_count, 0);
-  const canManageBalances = initialSpace.is_owner || !!user.permissions?.includes("balances:manage");
+  const canManageBalances = space.is_owner || !!user.permissions?.includes("balances:manage");
   const roomPlayers = useMemo<RoomPlayer[]>(
     () => tables.flatMap((table) => (table.players || []).map((player) => ({ ...player, tableID: table.id, tableName: table.name }))),
     [tables],
@@ -123,13 +154,14 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
       return (
         <LandlordRoom
           user={user}
-          initialSpace={initialSpace}
+          initialSpace={space}
           initialTable={selectedTable}
           onBack={() => {
             setSelectedTable(null);
             onNavigateTable();
             void loadTables();
             void loadLeaderboard();
+            void loadSpace();
           }}
         />
       );
@@ -137,21 +169,26 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     return (
       <PokerRoom
         user={user}
-        initialSpace={initialSpace}
+        initialSpace={space}
         initialTable={selectedTable}
         onBack={() => {
           setSelectedTable(null);
           onNavigateTable();
           void loadTables();
           void loadLeaderboard();
+          void loadSpace();
         }}
       />
     );
   }
 
   async function copyInvite() {
-    await navigator.clipboard.writeText(initialSpace.invite_code || "");
-    toast.success("频道邀请码已复制");
+    try {
+      await navigator.clipboard.writeText(space.invite_code || "");
+      toast.success("频道邀请码已复制");
+    } catch {
+      toast.error("复制失败，请检查浏览器剪贴板权限");
+    }
   }
 
   function openTable(table: TableSummary) {
@@ -166,12 +203,12 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     setTableActionBusy(true);
     try {
       if (mode === "clear") {
-        const result = await post<{ settled_players: number; settled_cents: number; table: TableSummary }>(`/api/spaces/${initialSpace.id}/tables/${table.id}/clear`);
+        const result = await post<{ settled_players: number; settled_cents: number; table: TableSummary }>(`/api/spaces/${space.id}/tables/${table.id}/clear`);
         setTables((current) => current.map((item) => item.id === table.id ? result.table : item));
         toast.success(`已结算并移出 ${result.settled_players} 名玩家，共 ${money(result.settled_cents)}`);
       } else {
         const force = table.player_count > 0 ? "?force=true" : "";
-        await remove(`/api/spaces/${initialSpace.id}/tables/${table.id}${force}`);
+        await remove(`/api/spaces/${space.id}/tables/${table.id}${force}`);
         setTables((current) => current.filter((item) => item.id !== table.id));
         toast.success(table.player_count > 0 ? `已结算 ${table.player_count} 名玩家并删除牌桌` : "牌桌已删除");
       }
@@ -188,35 +225,35 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
     <div className="game-canvas channel-shell flex min-h-svh flex-col">
       <header className="game-topbar grid min-h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-2 sm:px-6 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
         <div className="flex min-w-0 items-center gap-3">
-          <Button variant="ghost" onClick={onBack}><ArrowLeft data-icon="inline-start" /><span className="hidden sm:inline">频道大厅</span></Button>
+          <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" variant="ghost" onClick={onBack} aria-label="返回频道大厅"><ArrowLeft data-icon="inline-start" /><span className="hidden sm:inline">频道大厅</span></Button>
           <Separator orientation="vertical" className="h-8" />
           <BrandMark className="size-9 shrink-0" aria-hidden="true" />
-          <div className="min-w-0"><h1 className="truncate text-sm font-semibold">{initialSpace.name}</h1><p className="truncate text-xs text-muted-foreground">{tables.length} 个牌桌 · {onlinePlayers} 人在线</p></div>
+          <div className="min-w-0"><h1 className="truncate text-sm font-semibold">{space.name}</h1><p className="truncate text-xs text-muted-foreground">{tables.length} 个牌桌 · {onlinePlayers} 人在线</p></div>
         </div>
         <nav className="order-3 col-span-2 flex items-center gap-1 justify-self-center md:order-none md:col-span-1" aria-label="游戏导航">
-          <Button variant={gameType === "texas_holdem" ? "secondary" : "ghost"} onClick={() => setGameType("texas_holdem")}><Spade data-icon="inline-start" />德州扑克</Button>
-          <Button variant={gameType === "landlord" ? "secondary" : "ghost"} onClick={() => setGameType("landlord")}><Crown data-icon="inline-start" />斗地主</Button>
+          <Button className="min-h-11 lg:min-h-8" variant={gameType === "texas_holdem" ? "secondary" : "ghost"} onClick={() => setGameType("texas_holdem")}><Spade data-icon="inline-start" />德州扑克</Button>
+          <Button className="min-h-11 lg:min-h-8" variant={gameType === "landlord" ? "secondary" : "ghost"} onClick={() => setGameType("landlord")}><Crown data-icon="inline-start" />斗地主</Button>
         </nav>
-        <div className="flex items-center justify-self-end gap-2"><Button size="sm" variant="outline" onClick={onOpenBindings}><Link2 data-icon="inline-start" /><span className="hidden sm:inline">频道账号</span></Button>{canManageBalances && <Button size="sm" variant="outline" onClick={onOpenBalances}><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">余额管理</span></Button>}{initialSpace.can_manage && initialSpace.invite_code && <Button size="sm" variant="outline" onClick={() => void copyInvite()}><Copy data-icon="inline-start" /><span className="hidden sm:inline">邀请码</span></Button>}</div>
+        <div className="flex items-center justify-self-end gap-2"><Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBindings} aria-label="频道账号"><Link2 data-icon="inline-start" /><span className="hidden sm:inline">频道账号</span></Button>{canManageBalances && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={onOpenBalances} aria-label="余额管理"><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">余额管理</span></Button>}{space.can_manage && space.invite_code && <Button className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0" size="sm" variant="outline" onClick={() => void copyInvite()} aria-label="复制频道邀请码"><Copy data-icon="inline-start" /><span className="hidden sm:inline">邀请码</span></Button>}</div>
       </header>
 
       <main className="min-w-0 flex-1 overflow-auto">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <Card className="min-w-0 [--card-spacing:--spacing(5)]">
-              <CardHeader>
+              <CardHeader className="channel-table-card-header">
                 <CardTitle>{gameType === "landlord" ? "斗地主" : "德州扑克"}牌局</CardTitle>
                 <CardDescription>选择一张牌桌坐下，空位和玩家状态每 5 秒更新。</CardDescription>
-                <CardAction className="flex gap-2"><Button variant="outline" disabled={!quickTable} onClick={() => quickTable && openTable(quickTable)}><Shuffle data-icon="inline-start" />{viewerTable ? "返回当前牌桌" : "快速加入"}</Button>{initialSpace.can_manage && <Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />新建牌桌</Button>}</CardAction>
+                <CardAction className="channel-table-card-actions flex gap-2"><Button className="min-h-11 lg:min-h-8" variant="outline" disabled={!quickTable} onClick={() => quickTable && openTable(quickTable)}><Shuffle data-icon="inline-start" />{viewerTable ? "返回当前牌桌" : "快速加入"}</Button>{space.can_manage && <Button className="min-h-11 lg:min-h-8" onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />新建牌桌</Button>}</CardAction>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+                {(spaceError || error) && <Alert variant="destructive"><AlertDescription>{spaceError || error}</AlertDescription></Alert>}
               {loading ? (
                   <div className="table-map-grid">{Array.from({ length: 6 }, (_, index) => <TableSkeleton key={index} />)}</div>
               ) : gameTables.length === 0 ? (
-                  <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{initialSpace.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{initialSpace.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
+                  <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{space.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{space.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
               ) : (
-                  <div className="table-map-grid">{gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onClear={initialSpace.can_manage && table.player_count > 0 ? () => setTableAdminAction({ mode: "clear", table }) : undefined} onDelete={initialSpace.can_manage ? () => setTableAdminAction({ mode: "delete", table }) : undefined} />)}{initialSpace.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
+                  <div className="table-map-grid">{gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onClear={space.can_manage && table.player_count > 0 ? () => setTableAdminAction({ mode: "clear", table }) : undefined} onDelete={space.can_manage ? () => setTableAdminAction({ mode: "delete", table }) : undefined} />)}{space.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
               )}
               </CardContent>
             </Card>
@@ -228,7 +265,7 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
 
       <CreateTableDialog
         open={createOpen}
-        spaceID={initialSpace.id}
+        spaceID={space.id}
         gameType={gameType}
         onClose={() => setCreateOpen(false)}
         onCreated={(table) => {
@@ -295,7 +332,7 @@ function TableMapTile({ table, blockedBySeat, onOpen, onClear, onDelete }: { tab
       {onClear && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button size="icon-xs" variant="ghost" className="absolute right-9 bottom-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" onClick={onClear} aria-label={`清空牌桌 ${table.name}`}><Eraser /></Button>
+            <Button size="icon-xs" variant="ghost" className="absolute right-14 bottom-2 min-h-11 min-w-11 opacity-100 transition-opacity lg:right-9 lg:min-h-6 lg:min-w-6 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100" onClick={onClear} aria-label={`清空牌桌 ${table.name}`}><Eraser /></Button>
           </TooltipTrigger>
           <TooltipContent side="top">结算全部玩家并清空牌桌</TooltipContent>
         </Tooltip>
@@ -303,7 +340,7 @@ function TableMapTile({ table, blockedBySeat, onOpen, onClear, onDelete }: { tab
       {onDelete && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button size="icon-xs" variant="ghost" className="absolute right-2 bottom-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" onClick={onDelete} aria-label={`删除牌桌 ${table.name}`}><Trash2 /></Button>
+            <Button size="icon-xs" variant="ghost" className="absolute right-2 bottom-2 min-h-11 min-w-11 opacity-100 transition-opacity lg:min-h-6 lg:min-w-6 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100" onClick={onDelete} aria-label={`删除牌桌 ${table.name}`}><Trash2 /></Button>
           </TooltipTrigger>
           <TooltipContent side="top">{table.player_count > 0 ? "结算全部玩家并删除牌桌" : "删除牌桌"}</TooltipContent>
         </Tooltip>
@@ -430,7 +467,7 @@ function CreateTableDialog({ open, spaceID, gameType, onClose, onCreated }: { op
         <form onSubmit={submit}>
           <DialogHeader><DialogTitle>创建{gameType === "landlord" ? "斗地主" : "德州扑克"}牌桌</DialogTitle><DialogDescription>新牌桌使用当前频道的 New API 连接和成员体系。</DialogDescription></DialogHeader>
           <FieldGroup className="mt-6">
-            <Field><FieldLabel htmlFor="table-name">牌桌名称</FieldLabel><Input id="table-name" name="table-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：休闲桌…" autoComplete="off" required autoFocus /></Field>
+            <Field><FieldLabel htmlFor="table-name">牌桌名称</FieldLabel><Input id="table-name" name="table-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：休闲桌…" autoComplete="off" required /></Field>
             {gameType === "texas_holdem" ? <div className="grid grid-cols-2 gap-4">
               <Field><FieldLabel htmlFor="small-blind">小盲（美元）</FieldLabel><Input id="small-blind" name="small-blind" type="number" min="0.01" step="0.01" value={smallBlind} onChange={(event) => setSmallBlind(event.target.value)} required /></Field>
               <Field><FieldLabel htmlFor="big-blind">大盲（美元）</FieldLabel><Input id="big-blind" name="big-blind" type="number" min="0.01" step="0.01" value={bigBlind} onChange={(event) => setBigBlind(event.target.value)} required /></Field>
