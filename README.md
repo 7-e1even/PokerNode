@@ -1,6 +1,6 @@
 # PokerNode
 
-PokerNode 是一个朋友局游戏平台，现支持最多 8 人的德州扑克和 3 人斗地主：Go 服务端负责发牌、行动校验和结算，React 前端负责牌桌交互，并通过 New API 管理玩家余额。
+PokerNode 是一个面向桌面、平板和手机的朋友局游戏平台，现支持最多 8 人的德州扑克和 3 人斗地主：Go 服务端负责发牌、行动校验和结算，React 前端负责实时牌桌交互，并通过 New API 管理玩家余额。
 
 > 页面中的 `$` 是 New API quota 的换算显示，不代表法币。默认 `500,000 quota = $1.00`。
 
@@ -17,8 +17,9 @@ _演示账号、频道名称和账户余额已脱敏。_
 - 3 人斗地主、叫分、常用牌型、炸弹/王炸与春天结算
 - 全员准备后自动开局，行动时限可设为 5–300 秒
 - New API 自动绑定、买入扣款和离桌返还
+- 每位玩家独立 MCP Key，支持外部 Agent 托管和网页一键收回控制
 - 账号、角色、加密凭证和资金记录
-- PostgreSQL 持久化、WebSocket 实时同步和移动端适配
+- PostgreSQL 持久化、WebSocket 实时同步和响应式触屏牌桌
 
 详细规则见 [德州扑克规则](docs/POKER_RULES.md) 与 [斗地主规则](docs/LANDLORD_RULES.md)。
 
@@ -91,7 +92,98 @@ docker compose up -d
 
 ## MCP Agent
 
-站点在 `/mcp` 提供带每用户独立 Key 的 Streamable HTTP MCP。玩家显式开启“Agent 托管”后，外部 Agent 可以读取唯一当前牌局、入座、准备、等待轮次并携带 `turn_id` 执行合法动作；网页端可随时收回控制。本地 `stdio` 模式仍可选用。接入方式与安全边界见 [用 MCP Agent 打牌](docs/MCP_AGENT.md)。
+站点在 `/mcp` 提供带每用户独立 Key 的 Streamable HTTP MCP。玩家在用户菜单的“Agent MCP”中生成 Key 并开启“Agent 托管”后，外部 Agent 可以读取牌局、入座、准备、等待轮次并执行合法动作；网页端可随时关闭托管并收回控制。
+
+MCP 地址是 `https://你的域名/mcp`，请求使用玩家自己的 Key：
+
+```http
+Authorization: Bearer pnmcp_你的玩家Key
+```
+
+Codex、Claude Code 和 Cursor 建议先把 Key 放入环境变量：
+
+```powershell
+$env:POKERNODE_MCP_KEY = "pnmcp_你的玩家Key"
+```
+
+```bash
+export POKERNODE_MCP_KEY="pnmcp_你的玩家Key"
+```
+
+常用客户端配置如下。请先将 `poker.example.com` 替换为实际域名。
+
+### Codex
+
+加入 `~/.codex/config.toml`，也可放在受信任项目的 `.codex/config.toml`：
+
+```toml
+[mcp_servers.pokernode]
+url = "https://poker.example.com/mcp"
+bearer_token_env_var = "POKERNODE_MCP_KEY"
+```
+
+### Claude Code / 通用 JSON
+
+Claude Code 可写入项目根目录 `.mcp.json`；其他采用 `mcpServers` 格式并支持环境变量展开的客户端也可参考：
+
+```json
+{
+  "mcpServers": {
+    "pokernode": {
+      "type": "http",
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${POKERNODE_MCP_KEY}"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+写入项目的 `.cursor/mcp.json` 或用户目录的 `~/.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "pokernode": {
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:POKERNODE_MCP_KEY}"
+      }
+    }
+  }
+}
+```
+
+### VS Code / GitHub Copilot
+
+写入 `.vscode/mcp.json`。首次启动时，VS Code 会安全地提示输入玩家 Key：
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "pokernode-mcp-key",
+      "description": "PokerNode 玩家 MCP Key",
+      "password": true
+    }
+  ],
+  "servers": {
+    "pokernode": {
+      "type": "http",
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:pokernode-mcp-key}"
+      }
+    }
+  }
+}
+```
+
+保存后重启客户端并检查 MCP 连接状态。本地 `stdio` 模式、更多配置方式、工具列表和安全边界见 [用 MCP Agent 打牌](docs/MCP_AGENT.md)。生产环境必须使用 HTTPS，并且不要把完整 Key 提交到配置仓库。
 
 ## 可选：微信登录
 

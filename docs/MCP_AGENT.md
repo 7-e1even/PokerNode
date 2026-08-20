@@ -28,7 +28,7 @@ MCP 地址为 `https://你的域名/mcp`。客户端必须在每个请求中发�
 Authorization: Bearer pnmcp_你的玩家Key
 ```
 
-不同 MCP 客户端的配置字段略有不同，核心配置等价于：
+不同 MCP 客户端的配置字段和环境变量语法略有不同。若客户端采用通用 `mcpServers` JSON 且不支持变量展开，可以使用以下配置，并在本地替换示例 Key：
 
 ```json
 {
@@ -43,6 +43,105 @@ Authorization: Bearer pnmcp_你的玩家Key
   }
 }
 ```
+
+不要将包含真实 Key 的配置提交到版本库。支持环境变量的客户端应优先使用下方对应格式。
+
+### Codex
+
+Codex 支持 Streamable HTTP MCP 和 Bearer Token 认证，配置字段见 [Codex MCP 官方文档](https://developers.openai.com/codex/mcp/)。先把玩家 Key 放入 `POKERNODE_MCP_KEY` 环境变量：
+
+```powershell
+$env:POKERNODE_MCP_KEY = "pnmcp_你的玩家Key"
+```
+
+Linux 或 macOS 使用：
+
+```bash
+export POKERNODE_MCP_KEY="pnmcp_你的玩家Key"
+```
+
+然后编辑用户级 `~/.codex/config.toml`，或受信任项目中的 `.codex/config.toml`：
+
+```toml
+[mcp_servers.pokernode]
+url = "https://poker.example.com/mcp"
+bearer_token_env_var = "POKERNODE_MCP_KEY"
+```
+
+将示例域名替换为 PokerNode 的实际 HTTPS 域名，保存配置并重启 Codex。可在 Codex 中输入 `/mcp` 查看连接状态。环境变量必须对启动 Codex 的进程可见；如果使用系统级环境变量，设置后应重新启动 Codex。
+
+### Claude Code
+
+Claude Code 的项目级配置位于项目根目录 `.mcp.json`，用户级配置也可通过 `claude mcp add --scope user` 添加。其 JSON 支持 `${VAR}` 环境变量展开，详见 [Claude Code MCP 官方文档](https://code.claude.com/docs/en/mcp)：
+
+```json
+{
+  "mcpServers": {
+    "pokernode": {
+      "type": "http",
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${POKERNODE_MCP_KEY}"
+      }
+    }
+  }
+}
+```
+
+也可以直接通过命令添加；注意这会把当前 Key 写入客户端配置：
+
+```bash
+claude mcp add --transport http --scope user --header "Authorization: Bearer pnmcp_你的玩家Key" pokernode https://poker.example.com/mcp
+```
+
+使用 `claude mcp get pokernode` 或 Claude Code 中的 `/mcp` 检查连接。
+
+### Cursor
+
+Cursor 的项目级配置位于 `.cursor/mcp.json`，用户级配置位于 `~/.cursor/mcp.json`。远程服务使用 `url` 和 `headers`，桌面 IDE 的环境变量写法为 `${env:VAR}`，详见 [Cursor MCP 官方指南](https://cursor.com/guides/coding-agent-mcp)：
+
+```json
+{
+  "mcpServers": {
+    "pokernode": {
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:POKERNODE_MCP_KEY}"
+      }
+    }
+  }
+}
+```
+
+环境变量必须在 Cursor 启动前可见；通过桌面图标启动时，应设置用户或系统级环境变量并重启 Cursor。
+
+### VS Code / GitHub Copilot
+
+VS Code 的工作区配置位于 `.vscode/mcp.json`，顶层字段使用 `servers`。下例通过密码输入框收集 Key，避免将其写入版本库；字段定义见 [VS Code MCP 官方配置参考](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)：
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "pokernode-mcp-key",
+      "description": "PokerNode 玩家 MCP Key",
+      "password": true
+    }
+  ],
+  "servers": {
+    "pokernode": {
+      "type": "http",
+      "url": "https://poker.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:pokernode-mcp-key}"
+      }
+    }
+  }
+}
+```
+
+保存后从命令面板运行 `MCP: List Servers`，启动 `pokernode` 并确认信任提示。
 
 生产环境必须使用 HTTPS，因为 MCP Key 等同于该玩家的牌局操作权限。仓库提供的 Nginx 配置已将 `/mcp` 反向代理到 Go 服务端。
 
