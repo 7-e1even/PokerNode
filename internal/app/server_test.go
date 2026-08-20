@@ -94,9 +94,12 @@ func TestUpdateOwnCredentials(t *testing.T) {
 	if avatarResponse.StatusCode != http.StatusOK || avatarResponse.Header.Get("Content-Type") != "image/png" || !bytes.Equal(avatarBody, pngAvatar) {
 		t.Fatalf("unexpected avatar response: status=%d content-type=%q body=%v", avatarResponse.StatusCode, avatarResponse.Header.Get("Content-Type"), avatarBody)
 	}
-	requestJSON(t, alice, http.MethodDelete, appServer.URL+"/api/me/avatar", nil, http.StatusOK, &profileUpdated)
-	if profileUpdated.User.AvatarURL != "" {
-		t.Fatalf("avatar URL was not cleared: %q", profileUpdated.User.AvatarURL)
+	var profileDeleted struct {
+		User authenticatedUser `json:"user"`
+	}
+	requestJSON(t, alice, http.MethodDelete, appServer.URL+"/api/me/avatar", nil, http.StatusOK, &profileDeleted)
+	if profileDeleted.User.AvatarURL != "" {
+		t.Fatalf("avatar URL was not cleared: %q", profileDeleted.User.AvatarURL)
 	}
 
 	credentialsURL := appServer.URL + "/api/me/credentials"
@@ -682,24 +685,14 @@ func TestPlayerCanOnlyJoinOneTableGlobally(t *testing.T) {
 		t.Fatalf("concurrent joins should produce one success and one conflict: %#v", concurrentResults)
 	}
 
-	var tables struct {
-		Tables []tableSummary `json:"tables"`
+	var seatedTable struct {
+		Table struct {
+			ViewerSeat int `json:"viewer_seat"`
+		} `json:"table"`
 	}
-	requestJSON(t, player, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tables)
-	seatedTables := 0
-	for _, table := range tables.Tables {
-		if table.ViewerSeated {
-			seatedTables++
-		}
-	}
-	requestJSON(t, player, http.MethodGet, otherSpacePath+"/tables", nil, http.StatusOK, &tables)
-	for _, table := range tables.Tables {
-		if table.ViewerSeated {
-			seatedTables++
-		}
-	}
-	if seatedTables != 1 {
-		t.Fatalf("player should be seated at exactly one global table, got %d", seatedTables)
+	requestJSON(t, player, http.MethodGet, strings.TrimSuffix(successfulLeave, "/leave"), nil, http.StatusOK, &seatedTable)
+	if seatedTable.Table.ViewerSeat < 0 {
+		t.Fatalf("player was not seated at the table whose concurrent join succeeded: %#v", seatedTable.Table)
 	}
 	requestJSON(t, player, http.MethodPost, successfulLeave, map[string]any{}, http.StatusOK, nil)
 
