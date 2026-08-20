@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -16,9 +17,10 @@ const (
 )
 
 type Profile struct {
-	OpenID   string
-	UnionID  string
-	Nickname string
+	OpenID    string
+	UnionID   string
+	Nickname  string
+	AvatarURL string
 }
 
 func (p Profile) Subject() string {
@@ -88,7 +90,15 @@ func (c *Client) Authenticate(ctx context.Context, code string) (Profile, error)
 	if result.OpenID == "" {
 		return Profile{}, fmt.Errorf("load user profile: incomplete response")
 	}
-	return Profile{OpenID: result.OpenID, UnionID: result.UnionID, Nickname: result.Nickname}, nil
+	return Profile{OpenID: result.OpenID, UnionID: result.UnionID, Nickname: result.Nickname, AvatarURL: normalizeAvatarURL(result.AvatarURL)}, nil
+}
+
+func normalizeAvatarURL(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "http://") {
+		return "https://" + strings.TrimPrefix(value, "http://")
+	}
+	return value
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, target any) error {
@@ -118,9 +128,10 @@ type tokenResponse struct {
 }
 
 type profileResponse struct {
-	OpenID   string `json:"openid"`
-	UnionID  string `json:"unionid"`
-	Nickname string `json:"nickname"`
-	ErrCode  int    `json:"errcode"`
-	ErrMsg   string `json:"errmsg"`
+	OpenID    string `json:"openid"`
+	UnionID   string `json:"unionid"`
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"headimgurl"`
+	ErrCode   int    `json:"errcode"`
+	ErrMsg    string `json:"errmsg"`
 }

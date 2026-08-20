@@ -16,10 +16,11 @@ const (
 )
 
 type gameActionInput struct {
-	Action string          `json:"action"`
-	Amount int64           `json:"amount_cents"`
-	Bid    int             `json:"bid"`
-	Cards  []landlord.Card `json:"cards"`
+	Action         string          `json:"action"`
+	Amount         int64           `json:"amount_cents"`
+	Bid            int             `json:"bid"`
+	Cards          []landlord.Card `json:"cards"`
+	ExpectedTurnID uint64          `json:"expected_turn_id"`
 }
 
 type runtimePlayerView struct {

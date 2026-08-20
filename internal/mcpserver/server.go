@@ -33,6 +33,8 @@ type ListTablesOutput struct {
 	Tables []tableSummary `json:"tables" jsonschema:"Poker tables in the channel."`
 }
 
+type CurrentGameInput struct{}
+
 type TableInput struct {
 	SpaceID string `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
 	TableID string `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
@@ -45,12 +47,13 @@ type JoinTableInput struct {
 }
 
 type ActInput struct {
-	SpaceID     string   `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
-	TableID     string   `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
-	Action      string   `json:"action" jsonschema:"For Texas Hold'em: fold, check, call, bet, raise, or all_in. For landlord: bid, play, or pass. Use only an allowed action."`
-	AmountCents int64    `json:"amount_cents,omitempty" jsonschema:"Texas Hold'em only. For bet or raise, the total target bet in cents."`
-	Bid         int      `json:"bid,omitempty" jsonschema:"Landlord bid from 0 through 3. Zero means no bid."`
-	Cards       []string `json:"cards,omitempty" jsonschema:"Landlord cards to play using compact codes such as 3c, Td, 2s, SJ, or BJ."`
+	SpaceID        string   `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
+	TableID        string   `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
+	Action         string   `json:"action" jsonschema:"For Texas Hold'em: fold, check, call, bet, raise, or all_in. For landlord: bid, play, or pass. Use only an allowed action."`
+	AmountCents    int64    `json:"amount_cents,omitempty" jsonschema:"Texas Hold'em only. For bet or raise, the total target bet in cents."`
+	Bid            int      `json:"bid,omitempty" jsonschema:"Landlord bid from 0 through 3. Zero means no bid."`
+	Cards          []string `json:"cards,omitempty" jsonschema:"Landlord cards to play using compact codes such as 3c, Td, 2s, SJ, or BJ."`
+	ExpectedTurnID uint64   `json:"expected_turn_id" jsonschema:"Required turn_id from the latest table state. The action is rejected if the turn has changed."`
 }
 
 type WaitForTurnInput struct {
@@ -160,6 +163,14 @@ type TableOutput struct {
 	WaitTimedOut bool      `json:"wait_timed_out,omitempty"`
 }
 
+type CurrentGameOutput struct {
+	Active              bool       `json:"active" jsonschema:"Whether this player is currently seated at a table."`
+	AgentControlEnabled bool       `json:"agent_control_enabled" jsonschema:"Whether the player explicitly handed gameplay control to this Agent."`
+	SpaceID             string     `json:"space_id,omitempty"`
+	TableID             string     `json:"table_id,omitempty"`
+	Table               *TableView `json:"table,omitempty"`
+}
+
 func New(api *APIClient) *mcp.Server {
 	return newServer(api, nil)
 }
@@ -173,6 +184,7 @@ func newServer(api *APIClient, schemaCache *mcp.SchemaCache) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pokernode-mcp", Version: serverVersion}, options)
 
 	mcp.AddTool(server, readOnlyTool("pokernode_list_channels", "List channels available to the configured PokerNode player account."), service.listChannels)
+	mcp.AddTool(server, readOnlyTool("pokernode_get_current_game", "Return the single table where this player is currently seated, across all channels and game types."), service.getCurrentGame)
 	mcp.AddTool(server, readOnlyTool("pokernode_list_tables", "List game tables in a channel, including game type, seats, stakes, and whether this account is seated."), service.listTables)
 	mcp.AddTool(server, readOnlyTool("pokernode_get_table", "Read the current table from this player's perspective. Private hole cards are visible only when PokerNode permits them."), service.getTable)
 	mcp.AddTool(server, readOnlyTool("pokernode_wait_for_turn", "Wait until this player can act, the hand ends, or the timeout expires, then return the latest table state."), service.waitForTurn)
@@ -202,6 +214,19 @@ func boolPointer(value bool) *bool { return &value }
 func (s *Server) listChannels(ctx context.Context, _ *mcp.CallToolRequest, _ ListChannelsInput) (*mcp.CallToolResult, ListChannelsOutput, error) {
 	channels, err := s.api.listChannels(ctx)
 	return nil, ListChannelsOutput{Channels: channels}, err
+}
+
+func (s *Server) getCurrentGame(ctx context.Context, _ *mcp.CallToolRequest, _ CurrentGameInput) (*mcp.CallToolResult, CurrentGameOutput, error) {
+	current, err := s.api.getCurrentGame(ctx)
+	if err != nil {
+		return nil, CurrentGameOutput{}, err
+	}
+	output := CurrentGameOutput{Active: current.Active, AgentControlEnabled: current.AgentControlEnabled, SpaceID: current.SpaceID, TableID: current.TableID}
+	if current.Active {
+		table := tableOutput(current.Table, "").Table
+		output.Table = &table
+	}
+	return nil, output, nil
 }
 
 func (s *Server) listTables(ctx context.Context, _ *mcp.CallToolRequest, input ListTablesInput) (*mcp.CallToolResult, ListTablesOutput, error) {
@@ -287,7 +312,13 @@ func (s *Server) act(ctx context.Context, _ *mcp.CallToolRequest, input ActInput
 	if err != nil {
 		return nil, TableOutput{}, err
 	}
-	request := gameActionRequest{Action: input.Action, Amount: input.AmountCents, Bid: input.Bid}
+	if input.ExpectedTurnID == 0 {
+		return nil, TableOutput{}, errors.New("expected_turn_id is required; call pokernode_get_table or pokernode_wait_for_turn and use its current turn_id")
+	}
+	if input.ExpectedTurnID != snapshotTurnID(current.Table) {
+		return nil, tableOutput(current.Table, ""), errors.New("the turn has changed; use the returned current table state and decide again")
+	}
+	request := gameActionRequest{Action: input.Action, Amount: input.AmountCents, Bid: input.Bid, ExpectedTurnID: input.ExpectedTurnID}
 	if current.Table.GameType == landlord.GameType {
 		if input.Action != string(landlord.ActionBid) && input.Action != string(landlord.ActionPlay) && input.Action != string(landlord.ActionPass) {
 			return nil, TableOutput{}, errors.New("landlord action must be bid, play, or pass")
@@ -451,6 +482,16 @@ func snapshotCanAct(snapshot gameSnapshot) bool {
 		return snapshot.Landlord.Allowed.CanAct
 	}
 	return snapshot.Poker != nil && snapshot.Poker.Allowed.CanAct
+}
+
+func snapshotTurnID(snapshot gameSnapshot) uint64 {
+	if snapshot.Landlord != nil {
+		return snapshot.Landlord.TurnID
+	}
+	if snapshot.Poker != nil {
+		return snapshot.Poker.TurnID
+	}
+	return 0
 }
 
 func snapshotHandActive(snapshot gameSnapshot) bool {

@@ -756,6 +756,7 @@ func (t *Table) finishHandLocked() {
 		}
 		player.Bet = 0
 		player.Committed = 0
+		player.Ready = false
 		player.InHand = false
 		player.AllIn = false
 	}

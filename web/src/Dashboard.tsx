@@ -4,7 +4,7 @@ import {
   Menu, Plus, RadioTower, ShieldCheck, Trophy,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -185,7 +185,7 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
+          <Button variant="secondary" className="h-auto gap-2 p-1.5 pr-2"><Avatar className="size-8"><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="hidden min-w-0 text-left sm:block"><strong className="block max-w-32 truncate text-xs">{user.display_name}</strong><small className="block text-xs text-muted-foreground">{roleLabel(user.role)}</small></span></Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56"><DropdownMenuLabel><span className="block text-foreground">{user.display_name}</span><span className="block font-normal">@{user.username}</span></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem onSelect={onOpenAccount}><KeyRound />账号安全</DropdownMenuItem><DropdownMenuItem onSelect={onOpenMCP}><Bot />Agent MCP</DropdownMenuItem><DropdownMenuItem onSelect={onOpenBindings}><Link2 />频道账号</DropdownMenuItem>{onOpenAdmin && <DropdownMenuItem onSelect={onOpenAdmin}><ShieldCheck />打开运营后台</DropdownMenuItem>}{wechatLoginEnabled && (user.wechat_bound ? <DropdownMenuItem disabled><CheckCircle2 />微信已绑定</DropdownMenuItem> : <DropdownMenuItem onSelect={() => window.location.assign("/api/auth/wechat/link")}><WeChatIcon />绑定微信</DropdownMenuItem>)}<DropdownMenuItem variant="destructive" onSelect={onLogout}><LogOut />退出登录</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
       </DropdownMenu>
@@ -331,9 +331,9 @@ function LobbyLeaderboard({ entries, currentUserID, loading, error }: {
               {ranked.map((entry, index) => (
                 <TableRow className={cn(entry.user_id === currentUserID && "bg-muted/50")} key={entry.user_id}>
                   <TableCell className="text-center"><Badge className="size-7 justify-center rounded-full p-0" variant={index === 0 ? "default" : index < 3 ? "secondary" : "outline"}>{index + 1}</Badge></TableCell>
-                  <TableCell><div className="flex min-w-0 items-center gap-3"><div className="relative pt-1">{index === 0 && <Crown aria-hidden="true" className="absolute -top-2 left-1/2 size-3.5 -translate-x-1/2 fill-current text-winner" />}<Avatar className="size-9"><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar></div><div className="min-w-0"><strong className="block truncate">{entry.display_name}</strong>{entry.user_id === currentUserID && <span className="text-xs text-muted-foreground">这是你</span>}</div></div></TableCell>
+                  <TableCell><div className="flex min-w-0 items-center gap-3"><div className="relative pt-1">{index === 0 && <Crown aria-hidden="true" className="absolute -top-2 left-1/2 size-3.5 -translate-x-1/2 fill-current text-winner" />}<Avatar className="size-9"><AvatarImage src={entry.avatar_url} alt={entry.display_name} /><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar></div><div className="min-w-0"><strong className="block truncate">{entry.display_name}</strong>{entry.user_id === currentUserID && <span className="text-xs text-muted-foreground">这是你</span>}</div></div></TableCell>
                   <TableCell className="hidden text-right tabular-nums text-muted-foreground sm:table-cell">{entry.sessions}</TableCell>
-                  <TableCell className="text-right font-semibold tabular-nums">{netMoney(entry.net_cents)}</TableCell>
+                  <TableCell className={cn("text-right font-semibold tabular-nums", entry.net_cents > 0 && "text-success", entry.net_cents < 0 && "text-destructive", entry.net_cents === 0 && "text-muted-foreground")}>{netMoney(entry.net_cents)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

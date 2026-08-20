@@ -10,7 +10,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -262,7 +262,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
                   const canEdit = canManageUsers && user.id !== currentUser.id && (canManageRoles || user.role === "player");
                   return (
                     <TableRow key={user.id}>
-                      <TableCell><div className="flex items-center gap-3"><Avatar><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span><strong className="block">{user.display_name}</strong><small className="text-muted-foreground">@{user.username}</small></span></div></TableCell>
+                      <TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span><strong className="block">{user.display_name}</strong><small className="text-muted-foreground">@{user.username}</small></span></div></TableCell>
                       <TableCell><Badge variant={user.role === "super_admin" ? "default" : user.role === "channel_manager" ? "secondary" : "outline"}>{user.role_name || roleLabel(user.role, overview.roles)}</Badge><small className="mt-1 block text-muted-foreground">已加入 {user.joined_space_ids?.length || 0} 个 · 管理 {user.managed_space_ids?.length || 0} 个</small></TableCell>
                       <TableCell><Badge variant={user.status === "active" ? "secondary" : "destructive"}>{user.status === "active" ? "正常" : "已停用"}</Badge></TableCell>
                       <TableCell className="text-muted-foreground">{new Date(user.created_at).toLocaleDateString()}</TableCell>
@@ -495,7 +495,7 @@ function RankingManager({ users, allUsers, query, onQueryChange, onChanged }: {
                 <TableHeader><TableRow><TableHead>账号</TableHead><TableHead>角色</TableHead><TableHead>排名状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                 <TableBody>{users.map((user) => (
                   <TableRow key={user.id}>
-                    <TableCell><div className="flex items-center gap-3"><Avatar><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="min-w-0"><strong className="block truncate">{user.display_name}</strong><small className="block truncate text-muted-foreground">@{user.username}</small></span></div></TableCell>
+                    <TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.avatar_url} alt={user.display_name} /><AvatarFallback>{initials(user.display_name)}</AvatarFallback></Avatar><span className="min-w-0"><strong className="block truncate">{user.display_name}</strong><small className="block truncate text-muted-foreground">@{user.username}</small></span></div></TableCell>
                     <TableCell><Badge variant="outline">{user.role_name || user.role}</Badge></TableCell>
                     <TableCell><Badge variant={user.ranking_hidden ? "secondary" : "outline"}>{user.ranking_hidden ? "已屏蔽" : "正常展示"}</Badge></TableCell>
                     <TableCell className="text-right"><Button size="sm" variant={user.ranking_hidden ? "default" : "outline"} disabled={busyID !== null} onClick={() => void toggle(user)}>{busyID === user.id ? <Spinner data-icon="inline-start" /> : user.ranking_hidden ? <Eye data-icon="inline-start" /> : <EyeOff data-icon="inline-start" />}{user.ranking_hidden ? "恢复排名" : "屏蔽排名"}</Button></TableCell>

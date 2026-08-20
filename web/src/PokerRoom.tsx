@@ -210,54 +210,63 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
 
   return (
     <main className="poker-room flex h-svh min-h-0 flex-col overflow-hidden">
-      <header className="poker-toolbar z-20 flex h-12 shrink-0 items-center justify-between gap-2 px-1.5 sm:px-3 md:h-14 md:px-5">
-        <div className="flex min-w-0 items-center gap-1 sm:gap-2">
-          <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
-          <div className="min-w-0">
-            <h1 className="block truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
-            <span className="hidden truncate text-xs text-muted-foreground md:block">
-              {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5 md:gap-2">
-          <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
-            <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
-            {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
-          </Badge>
-          {space.is_bound && (
-            <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
-              <CircleDollarSign data-icon="inline-start" />
-              <span className="hidden sm:inline">{balance ? money(balance.cents) : "—"}</span>
-            </Button>
-          )}
-          <div className="hidden items-center gap-2 md:flex">
-            <IconButton label="牌桌规则" onClick={() => setRulesOpen(true)}><CircleHelp /></IconButton>
-            <IconButton label="资金记录" onClick={() => setHistoryOpen(true)}><History /></IconButton>
-            {space.can_manage && <IconButton label="频道设置" onClick={() => setSettingsOpen(true)}><Settings2 /></IconButton>}
-            <Button size="sm" variant="outline" onClick={onBack}><DoorOpen data-icon="inline-start" />离开牌桌</Button>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost" className="md:hidden" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />牌桌规则</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setHistoryOpen(true)}><History />资金记录</DropdownMenuItem>
-                {space.can_manage && <DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 />频道设置</DropdownMenuItem>}
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
-
       <section className="poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
+        <div className="poker-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2 p-2 sm:p-3">
+          <div className="poker-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
+            <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
+            <div className="min-w-0">
+              <h1 className="truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
+              <span className="hidden truncate text-xs text-muted-foreground md:block">
+                {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
+              </span>
+            </div>
+          </div>
+
+          {table && (
+            <div className="poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/90 px-2 py-1 shadow-sm backdrop-blur-md" aria-live="polite">
+              <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
+              <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
+              <Separator orientation="vertical" className="h-4" />
+              <span className="text-xs text-muted-foreground">盲注 {money(table.small_blind_cents)} / {money(table.big_blind_cents)}</span>
+              {table.current_bet_cents > 0 && (
+                <>
+                  <Separator orientation="vertical" className="hidden h-4 sm:block" />
+                  <span className="hidden text-xs text-muted-foreground sm:inline">{betStatusLabel(table)} · {money(table.current_bet_cents)}</span>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="poker-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+            <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
+              <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
+              {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
+            </Badge>
+            {space.is_bound && (
+              <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
+                <CircleDollarSign data-icon="inline-start" />
+                <span className="hidden sm:inline">{balance ? money(balance.cents) : "—"}</span>
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />牌桌规则</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setHistoryOpen(true)}><History />资金记录</DropdownMenuItem>
+                  {space.can_manage && <DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 />频道设置</DropdownMenuItem>}
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
         {table ? (
           <TableScene
             spaceID={space.id}
@@ -409,7 +418,10 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
   async function run(path: string, body?: unknown, balanceChanged = false) {
     setBusy(true);
     try {
-      const result = await post<TableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, body);
+      const requestBody = path === "action" && body && typeof body === "object"
+        ? { ...body, expected_turn_id: table.turn_id }
+        : body;
+      const result = await post<TableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, requestBody);
       if (result.table) onChanged(result.table, result.kick_vote ?? null);
       if (result.notice) toast.success(result.notice);
       if (balanceChanged) onBalanceChanged();
@@ -424,19 +436,6 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
 
   return (
     <div className="poker-scene relative mx-auto h-full min-h-0 w-full max-w-360 overflow-hidden" data-actionable={allowed.can_act}>
-      <div className="poker-hand-status absolute top-3 left-4 z-10 flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/95 px-2 py-1 shadow-sm" aria-live="polite">
-        <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
-        <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
-        <Separator orientation="vertical" className="h-4" />
-        <span className="text-xs text-muted-foreground">盲注 {money(table.small_blind_cents)} / {money(table.big_blind_cents)}</span>
-        {table.current_bet_cents > 0 && (
-          <>
-            <Separator orientation="vertical" className="hidden h-4 sm:block" />
-            <span className="hidden text-xs text-muted-foreground sm:inline">{betStatusLabel(table)} · {money(table.current_bet_cents)}</span>
-          </>
-        )}
-      </div>
-
       <div className="poker-table-layout absolute left-1/2 -translate-x-1/2 -translate-y-1/2">
         <div className="poker-table-surface absolute inset-0" />
         {burnEvent > 0 && handIsActive(table.street) && (

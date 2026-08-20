@@ -36,6 +36,7 @@ func TestMCPKeyLifecycleAndHTTPTransport(t *testing.T) {
 	requestJSON(t, browser, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
 		"username": "mcp_player", "display_name": "MCP Player", "password": "password-1",
 	}, http.StatusCreated, nil)
+	requestJSON(t, browser, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": true}, http.StatusConflict, nil)
 
 	var created struct {
 		Key    string       `json:"mcp_key"`
@@ -44,6 +45,17 @@ func TestMCPKeyLifecycleAndHTTPTransport(t *testing.T) {
 	requestJSON(t, browser, http.MethodPost, appServer.URL+"/api/me/mcp-key", nil, http.StatusCreated, &created)
 	if !strings.HasPrefix(created.Key, auth.MCPKeyPrefix) || !created.Status.Exists || created.Status.Last4 == "" {
 		t.Fatalf("MCP key was not created correctly: %#v", created)
+	}
+	directMCP := &http.Client{Transport: applicationBearerRoundTripper{token: created.Key, base: http.DefaultTransport}}
+	requestJSON(t, directMCP, http.MethodGet, appServer.URL+"/api/spaces", nil, http.StatusOK, nil)
+	requestJSON(t, directMCP, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": true}, http.StatusUnauthorized, nil)
+	requestJSON(t, browser, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": true}, http.StatusOK, nil)
+	var control struct {
+		Enabled bool `json:"enabled"`
+	}
+	requestJSON(t, browser, http.MethodGet, appServer.URL+"/api/me/agent-control", nil, http.StatusOK, &control)
+	if !control.Enabled {
+		t.Fatal("Agent control was not enabled")
 	}
 
 	var status struct {
@@ -92,6 +104,10 @@ func TestMCPKeyLifecycleAndHTTPTransport(t *testing.T) {
 	requestJSON(t, browser, http.MethodGet, appServer.URL+"/api/me/mcp-key", nil, http.StatusOK, &status)
 	if status.Status.Exists {
 		t.Fatalf("revoked MCP key still appears active: %#v", status.Status)
+	}
+	requestJSON(t, browser, http.MethodGet, appServer.URL+"/api/me/agent-control", nil, http.StatusOK, &control)
+	if control.Enabled {
+		t.Fatal("revoking the MCP key did not return control to the user")
 	}
 }
 

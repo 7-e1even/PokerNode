@@ -71,6 +71,31 @@ func TestAllFundedPlayersMustReadyBeforeHandStarts(t *testing.T) {
 	}
 }
 
+func TestHandCompletionClearsReadyState(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+
+	// A completed hand must clear even a stale ready flag restored mid-hand.
+	for _, player := range table.state.Seats {
+		if player != nil {
+			player.Ready = true
+		}
+	}
+	actor := table.Snapshot(1).Players[table.Snapshot(1).ActingSeat].UserID
+	if err := table.Act(actor, ActionFold, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, player := range table.Snapshot(1).Players {
+		if player.Ready {
+			t.Fatalf("ready state should reset when the hand completes: %+v", player)
+		}
+	}
+}
+
 func TestSeatChangesClearReadyState(t *testing.T) {
 	table := NewTable("main", "Test", 50, 100)
 	_, _ = table.Join(1, "Alice", 10_000)

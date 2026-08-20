@@ -30,6 +30,7 @@ type Config struct {
 	Username          string
 	Password          string
 	SessionToken      string
+	MCPKey            string
 	AllowInsecureHTTP bool
 }
 
@@ -39,6 +40,7 @@ func ConfigFromEnv() (Config, error) {
 		Username:     strings.TrimSpace(os.Getenv("POKERNODE_USERNAME")),
 		Password:     os.Getenv("POKERNODE_PASSWORD"),
 		SessionToken: strings.TrimSpace(os.Getenv("POKERNODE_SESSION_TOKEN")),
+		MCPKey:       strings.TrimSpace(os.Getenv("POKERNODE_MCP_KEY")),
 	}
 	if config.BaseURL == "" {
 		config.BaseURL = defaultBaseURL
@@ -64,8 +66,8 @@ func (c Config) Validate() error {
 	if baseURL.Scheme == "http" && !isLoopbackHost(baseURL.Hostname()) && !c.AllowInsecureHTTP {
 		return errors.New("remote PokerNode URLs must use HTTPS; set POKERNODE_ALLOW_INSECURE_HTTP=true only for a trusted private network")
 	}
-	if c.SessionToken == "" && (c.Username == "" || c.Password == "") {
-		return errors.New("set POKERNODE_SESSION_TOKEN or both POKERNODE_USERNAME and POKERNODE_PASSWORD")
+	if c.MCPKey == "" && c.SessionToken == "" && (c.Username == "" || c.Password == "") {
+		return errors.New("set POKERNODE_MCP_KEY, POKERNODE_SESSION_TOKEN, or both POKERNODE_USERNAME and POKERNODE_PASSWORD")
 	}
 	return nil
 }
@@ -84,6 +86,7 @@ type APIClient struct {
 	username      string
 	password      string
 	sessionToken  string
+	mcpKey        string
 	authMu        sync.Mutex
 	authenticated bool
 }
@@ -145,11 +148,28 @@ type wireTableEnvelope struct {
 	Settled     int64           `json:"settled_cents,omitempty"`
 }
 
+type wireCurrentGame struct {
+	Active              bool            `json:"active"`
+	AgentControlEnabled bool            `json:"agent_control_enabled"`
+	SpaceID             string          `json:"space_id,omitempty"`
+	TableID             string          `json:"table_id,omitempty"`
+	Table               json.RawMessage `json:"table,omitempty"`
+}
+
+type currentGame struct {
+	Active              bool
+	AgentControlEnabled bool
+	SpaceID             string
+	TableID             string
+	Table               gameSnapshot
+}
+
 type gameActionRequest struct {
-	Action string
-	Amount int64
-	Bid    int
-	Cards  []landlord.Card
+	Action         string
+	Amount         int64
+	Bid            int
+	Cards          []landlord.Card
+	ExpectedTurnID uint64
 }
 
 func NewAPIClient(config Config, httpClient *http.Client) (*APIClient, error) {
@@ -172,9 +192,11 @@ func NewAPIClient(config Config, httpClient *http.Client) (*APIClient, error) {
 	}
 	client := &APIClient{
 		baseURL: baseURL, httpClient: httpClient, username: config.Username,
-		password: config.Password, sessionToken: config.SessionToken,
+		password: config.Password, sessionToken: config.SessionToken, mcpKey: config.MCPKey,
 	}
-	if config.SessionToken != "" {
+	if config.MCPKey != "" {
+		client.authenticated = true
+	} else if config.SessionToken != "" {
 		httpClient.Jar.SetCookies(baseURL, []*http.Cookie{{Name: auth.CookieName, Value: config.SessionToken, Path: "/"}})
 		client.authenticated = true
 	}
@@ -204,6 +226,20 @@ func (c *APIClient) listTables(ctx context.Context, spaceID string) ([]tableSumm
 		return nil, err
 	}
 	return response.Tables, nil
+}
+
+func (c *APIClient) getCurrentGame(ctx context.Context) (currentGame, error) {
+	var response wireCurrentGame
+	if err := c.doJSON(ctx, http.MethodGet, "api/me/current-game", nil, &response); err != nil {
+		return currentGame{}, err
+	}
+	current := currentGame{Active: response.Active, AgentControlEnabled: response.AgentControlEnabled, SpaceID: response.SpaceID, TableID: response.TableID}
+	if !response.Active {
+		return current, nil
+	}
+	table, err := decodeGameSnapshot(response.Table)
+	current.Table = table
+	return current, err
 }
 
 func (c *APIClient) getTable(ctx context.Context, spaceID, tableID string) (tableEnvelope, error) {
@@ -236,11 +272,12 @@ func (c *APIClient) ready(ctx context.Context, spaceID, tableID string) (tableEn
 func (c *APIClient) act(ctx context.Context, spaceID, tableID string, input gameActionRequest) (tableEnvelope, error) {
 	var response wireTableEnvelope
 	body := struct {
-		Action string          `json:"action"`
-		Amount int64           `json:"amount_cents,omitempty"`
-		Bid    int             `json:"bid,omitempty"`
-		Cards  []landlord.Card `json:"cards,omitempty"`
-	}{Action: input.Action, Amount: input.Amount, Bid: input.Bid, Cards: input.Cards}
+		Action         string          `json:"action"`
+		Amount         int64           `json:"amount_cents,omitempty"`
+		Bid            int             `json:"bid,omitempty"`
+		Cards          []landlord.Card `json:"cards,omitempty"`
+		ExpectedTurnID uint64          `json:"expected_turn_id"`
+	}{Action: input.Action, Amount: input.Amount, Bid: input.Bid, Cards: input.Cards, ExpectedTurnID: input.ExpectedTurnID}
 	if err := c.doJSON(ctx, http.MethodPost, tablePath(spaceID, tableID)+"/action", body, &response); err != nil {
 		return tableEnvelope{}, err
 	}
@@ -290,7 +327,7 @@ func (c *APIClient) doJSON(ctx context.Context, method, path string, body, targe
 		return err
 	}
 	status, err := c.requestJSON(ctx, method, path, body, target)
-	if status != http.StatusUnauthorized || c.sessionToken != "" {
+	if status != http.StatusUnauthorized || c.sessionToken != "" || c.mcpKey != "" {
 		return err
 	}
 	c.authMu.Lock()
@@ -307,6 +344,10 @@ func (c *APIClient) ensureAuthenticated(ctx context.Context) error {
 	c.authMu.Lock()
 	defer c.authMu.Unlock()
 	if c.authenticated {
+		return nil
+	}
+	if c.mcpKey != "" {
+		c.authenticated = true
 		return nil
 	}
 	var response struct {
@@ -339,6 +380,9 @@ func (c *APIClient) requestJSON(ctx context.Context, method, path string, body, 
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "pokernode-mcp/0.1")
+	if c.mcpKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.mcpKey)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

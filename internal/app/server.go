@@ -36,12 +36,7 @@ type Server struct {
 	tables            map[string]*tableRuntime
 	balanceMu         sync.Mutex
 	tableJoinMu       sync.Mutex
-	tableJoinInFlight map[tableJoinKey]struct{}
-}
-
-type tableJoinKey struct {
-	spaceID string
-	userID  int64
+	tableJoinInFlight map[int64]struct{}
 }
 
 type tableRuntime struct {
@@ -84,7 +79,7 @@ func NewServer(database *store.Store, cipher *secure.Cipher, sessions *auth.Sess
 	server := &Server{
 		store: database, cipher: cipher, sessions: sessions, newAPI: newapi.NewClient(),
 		hub: realtime.NewHub(), logger: logger, tables: make(map[string]*tableRuntime),
-		tableJoinInFlight: make(map[tableJoinKey]struct{}),
+		tableJoinInFlight: make(map[int64]struct{}),
 	}
 	for _, option := range options {
 		option(server)
@@ -109,6 +104,9 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/me/mcp-key", s.withUser(s.handleMCPKeyStatus))
 	mux.HandleFunc("POST /api/me/mcp-key", s.withUser(s.handleCreateMCPKey))
 	mux.HandleFunc("DELETE /api/me/mcp-key", s.withUser(s.handleDeleteMCPKey))
+	mux.HandleFunc("GET /api/me/agent-control", s.withUser(s.handleAgentControlStatus))
+	mux.HandleFunc("PUT /api/me/agent-control", s.withUser(s.handleAgentControlUpdate))
+	mux.HandleFunc("GET /api/me/current-game", s.withUser(s.handleCurrentGame))
 	mux.HandleFunc("GET /api/account-bindings", s.withUser(s.handleListAccountBindings))
 	mux.HandleFunc("GET /api/leaderboard", s.withUser(s.handleLobbyLeaderboard))
 	mux.HandleFunc("GET /api/spaces", s.withUser(s.handleListSpaces))
@@ -166,6 +164,12 @@ type userHandler func(http.ResponseWriter, *http.Request, store.User) error
 func (s *Server) withUser(next userHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, err := s.currentUser(r)
+		if err != nil && mcpAPIRequestAllowed(r) {
+			user, err = s.mcpUserForAPIRequest(r)
+			if err == nil {
+				r = asMCPRequest(r)
+			}
+		}
 		if err != nil {
 			writeError(w, &apiError{Status: http.StatusUnauthorized, Message: "请先登录"})
 			return
@@ -174,6 +178,46 @@ func (s *Server) withUser(next userHandler) http.HandlerFunc {
 			s.writeHandlerError(w, err)
 		}
 	}
+}
+
+func mcpAPIRequestAllowed(r *http.Request) bool {
+	if r.Method == http.MethodGet && (r.URL.Path == "/api/spaces" || r.URL.Path == "/api/me/current-game") {
+		return true
+	}
+	if r.PathValue("spaceID") == "" {
+		return false
+	}
+	if r.Method == http.MethodGet {
+		return strings.HasSuffix(r.URL.Path, "/tables") || strings.HasSuffix(r.URL.Path, "/tables/"+r.PathValue("tableID"))
+	}
+	if r.Method != http.MethodPost || r.PathValue("tableID") == "" {
+		return false
+	}
+	for _, action := range []string{"/join", "/ready", "/action", "/leave"} {
+		if strings.HasSuffix(r.URL.Path, action) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) mcpUserForAPIRequest(r *http.Request) (store.User, error) {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") {
+		return store.User{}, errors.New("MCP bearer key required")
+	}
+	hash, err := auth.HashMCPKey(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
+	if err != nil {
+		return store.User{}, err
+	}
+	user, err := s.store.UserByMCPKeyHash(r.Context(), hash)
+	if err != nil {
+		return store.User{}, err
+	}
+	if user.Status != "active" {
+		return store.User{}, errors.New("MCP key owner is not active")
+	}
+	return user, nil
 }
 
 func (s *Server) withPermission(permission access.Permission, next userHandler) http.HandlerFunc {

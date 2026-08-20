@@ -24,31 +24,52 @@ _演示账号、频道名称和账户余额已脱敏。_
 
 ## Docker 部署
 
-服务器只需要 Docker Compose。默认从 GHCR 拉取 `linux/amd64`、`linux/arm64` 镜像。
+服务器只需要 Docker Compose。PokerNode 默认从 GHCR 拉取 `linux/amd64`、`linux/arm64` 镜像，不在服务器本地构建。
 
-1. 创建环境文件：
+先创建配置文件：
 
-   ```bash
-   cp .env.example .env
-   ```
+```bash
+cp .env.example .env
+```
 
-2. 至少填写以下三项：
+两种部署方式都需要手动填写：
 
-   ```dotenv
-   DATABASE_URL=postgres://pokernode:数据库密码@postgres.example:5432/pokernode?sslmode=require
-   POKERNODE_SESSION_SECRET=至少32字符的随机值
-   POKERNODE_ENCRYPTION_KEY=Base64编码的32字节随机值
-   ```
+```dotenv
+POKERNODE_SESSION_SECRET=至少32字符的随机值
+POKERNODE_ENCRYPTION_KEY=Base64编码的32字节随机值
+```
 
-   加密密钥投入使用后不要随意更换，否则已保存的 New API 凭证将无法解密。
+可以使用 `openssl rand -hex 48` 生成 Session Secret，使用 `openssl rand -base64 32` 生成加密密钥。加密密钥投入使用后不要随意更换，否则已保存的 New API 凭证将无法解密；迁移已有 PokerNode 数据库时必须沿用原密钥。
 
-3. 启动并检查：
+### 使用已有 PostgreSQL
 
-   ```bash
-   docker compose up -d
-   docker compose ps
-   curl http://localhost:8080/readyz
-   ```
+在 `.env` 填写现有数据库连接：
+
+```dotenv
+DATABASE_URL=postgres://用户名:密码@数据库地址:5432/pokernode?sslmode=require
+```
+
+启动：
+
+```bash
+docker compose up -d
+```
+
+### 自动搭建 PostgreSQL
+
+在 `.env` 填写一个 URL 安全的数据库密码，例如 `openssl rand -hex 32` 的输出：
+
+```dotenv
+POSTGRES_PASSWORD=随机数据库密码
+```
+
+使用内置数据库配置启动：
+
+```bash
+docker compose -f compose.postgres.yaml up -d
+```
+
+PostgreSQL 不开放宿主机端口，数据保存在 `pokernode_data` 持久卷中。执行普通的 `docker compose -f compose.postgres.yaml down` 会保留数据；增加 `-v` 会永久删除数据库卷。
 
 打开 [http://localhost:8080](http://localhost:8080)。升级时运行：
 
@@ -57,7 +78,7 @@ docker compose pull
 docker compose up -d
 ```
 
-端口、监听地址和可信来源可通过 `.env` 中的 `POKERNODE_PORT`、`POKERNODE_BIND_ADDRESS`、`POKERNODE_TRUSTED_ORIGINS` 调整。
+使用内置数据库时，在上述命令中增加 `-f compose.postgres.yaml`。端口、监听地址和可信来源可通过 `.env` 中的 `POKERNODE_PORT`、`POKERNODE_BIND_ADDRESS`、`POKERNODE_TRUSTED_ORIGINS` 调整。
 
 ## 首次使用
 
@@ -70,7 +91,7 @@ docker compose up -d
 
 ## MCP Agent
 
-站点在 `/mcp` 提供带每用户独立 Key 的 Streamable HTTP MCP，外部 Agent 可以用普通玩家身份读取牌桌、入座、准备、等待轮次并执行合法动作；本地 `stdio` 模式仍可选用。接入方式与安全边界见 [用 MCP Agent 打牌](docs/MCP_AGENT.md)。
+站点在 `/mcp` 提供带每用户独立 Key 的 Streamable HTTP MCP。玩家显式开启“Agent 托管”后，外部 Agent 可以读取唯一当前牌局、入座、准备、等待轮次并携带 `turn_id` 执行合法动作；网页端可随时收回控制。本地 `stdio` 模式仍可选用。接入方式与安全边界见 [用 MCP Agent 打牌](docs/MCP_AGENT.md)。
 
 ## 可选：微信登录
 

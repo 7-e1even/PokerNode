@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Bot, ExternalLink, KeyRound, LogOut } from "lucide-react";
 import { AccountCredentialsDialog } from "@/components/account-credentials-dialog";
 import { MCPKeyDialog } from "@/components/mcp-key-dialog";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
 import type { User } from "@/types";
@@ -17,7 +17,7 @@ export function NavUser({ user, onOpenLobby, onUserUpdated, onLogout }: { user: 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
-              <Avatar className="size-8 rounded-lg"><AvatarFallback className="rounded-lg">{initials(user.display_name)}</AvatarFallback></Avatar>
+              <Avatar className="size-8 rounded-lg"><AvatarImage className="rounded-lg" src={user.avatar_url} alt={user.display_name} /><AvatarFallback className="rounded-lg">{initials(user.display_name)}</AvatarFallback></Avatar>
               <div className="grid flex-1 text-left text-sm leading-tight"><span className="truncate font-medium">{user.display_name}</span><span className="truncate text-xs text-muted-foreground">{roleLabel(user.role)}</span></div>
             </SidebarMenuButton>
           </DropdownMenuTrigger>

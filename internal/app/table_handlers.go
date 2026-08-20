@@ -274,17 +274,49 @@ func (s *Server) handleTable(w http.ResponseWriter, r *http.Request, user store.
 	return nil
 }
 
+func (s *Server) handleCurrentGame(w http.ResponseWriter, r *http.Request, user store.User) error {
+	agentControlEnabled, err := s.store.AgentControlEnabled(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	spaceID, tableID, seated, err := s.userSeatedTableGlobally(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	if !seated {
+		writeJSON(w, http.StatusOK, map[string]bool{"active": false, "agent_control_enabled": agentControlEnabled})
+		return nil
+	}
+	data, err := s.store.LoadTableState(r.Context(), spaceID, tableID)
+	if err != nil {
+		return err
+	}
+	runtime, err := restoreTableRuntime(data)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active": true, "agent_control_enabled": agentControlEnabled,
+		"space_id": spaceID, "table_id": tableID, "table": runtime.snapshot(user.ID),
+	})
+	return nil
+}
+
 func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.requireGameplayControl(r, user.ID); err != nil {
+		return err
+	}
 	space, member, memberToken, err := s.memberCredentials(r, user.ID)
 	if err != nil {
 		return err
 	}
 	tableID := tableIDFromRequest(r)
-	releaseJoin, err := s.reserveTableJoin(r.Context(), space.ID, tableID, user.ID)
+	finishJoin, err := s.reserveTableJoin(r.Context(), space.ID, tableID, user.ID)
 	if err != nil {
 		return err
 	}
-	defer releaseJoin()
+	committed := false
+	defer func() { finishJoin(committed) }()
 	var input struct {
 		BuyIn int64 `json:"buy_in_cents"`
 	}
@@ -364,6 +396,10 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, status, message)
 		return err
 	}
+	committed = true
+	if err := s.store.ActivateTableSeat(r.Context(), user.ID, space.ID, tableID); err != nil {
+		s.logger.Error("activate global table seat", "user_id", user.ID, "space_id", space.ID, "table_id", tableID, "error", err)
+	}
 	if err := s.store.UpdateWalletOperation(r.Context(), operationID, "completed", ""); err != nil {
 		s.logger.Error("mark buy-in operation complete", "operation_id", operationID, "error", err)
 	}
@@ -372,32 +408,61 @@ func (s *Server) handleTableJoin(w http.ResponseWriter, r *http.Request, user st
 	return nil
 }
 
-func (s *Server) reserveTableJoin(ctx context.Context, spaceID, tableID string, userID int64) (func(), error) {
-	key := tableJoinKey{spaceID: spaceID, userID: userID}
+func (s *Server) reserveTableJoin(ctx context.Context, spaceID, tableID string, userID int64) (func(bool), error) {
 	s.tableJoinMu.Lock()
-	defer s.tableJoinMu.Unlock()
-	if _, exists := s.tableJoinInFlight[key]; exists {
+	if _, exists := s.tableJoinInFlight[userID]; exists {
+		s.tableJoinMu.Unlock()
 		return nil, &apiError{Status: http.StatusConflict, Message: "另一个入座请求正在处理中"}
 	}
-	seatedTableID, seated, err := s.userSeatedTableInSpace(ctx, spaceID, userID)
+	s.tableJoinInFlight[userID] = struct{}{}
+	s.tableJoinMu.Unlock()
+	cleanupInFlight := func() {
+		s.tableJoinMu.Lock()
+		delete(s.tableJoinInFlight, userID)
+		s.tableJoinMu.Unlock()
+	}
+
+	seatedSpaceID, seatedTableID, seated, err := s.userSeatedTableGlobally(ctx, userID)
 	if err != nil {
+		cleanupInFlight()
 		return nil, err
 	}
 	if seated {
-		if seatedTableID == tableID {
+		cleanupInFlight()
+		if seatedSpaceID == spaceID && seatedTableID == tableID {
 			return nil, &apiError{Status: http.StatusConflict, Message: "你已经在牌桌上"}
 		}
-		return nil, &apiError{Status: http.StatusConflict, Message: "你已经在当前频道的其他牌桌上，请先离桌"}
+		return nil, &apiError{Status: http.StatusConflict, Message: fmt.Sprintf("你已经在其他牌局中（频道 %s，牌桌 %s），请先离桌", seatedSpaceID, seatedTableID)}
 	}
-	s.tableJoinInFlight[key] = struct{}{}
-	return func() {
-		s.tableJoinMu.Lock()
-		delete(s.tableJoinInFlight, key)
-		s.tableJoinMu.Unlock()
+	existing, err := s.store.ReserveActiveTableSeat(ctx, userID, spaceID, tableID)
+	if errors.Is(err, store.ErrActiveTableSeat) && existing.Status == "active" {
+		if releaseErr := s.store.ReleaseTableSeat(ctx, existing.UserID, existing.SpaceID, existing.TableID); releaseErr == nil {
+			_, err = s.store.ReserveActiveTableSeat(ctx, userID, spaceID, tableID)
+		}
+	}
+	if err != nil {
+		cleanupInFlight()
+		if errors.Is(err, store.ErrActiveTableSeat) {
+			return nil, &apiError{Status: http.StatusConflict, Message: "另一个入座请求正在处理中，请稍后重试"}
+		}
+		return nil, err
+	}
+	return func(committed bool) {
+		if !committed {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.store.ReleaseTableSeat(cleanupContext, userID, spaceID, tableID); err != nil {
+				s.logger.Error("release failed table reservation", "user_id", userID, "space_id", spaceID, "table_id", tableID, "error", err)
+			}
+		}
+		cleanupInFlight()
 	}, nil
 }
 
 func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.requireGameplayControl(r, user.ID); err != nil {
+		return err
+	}
 	space, member, _, err := s.memberCredentials(r, user.ID)
 	if err != nil {
 		return err
@@ -424,6 +489,9 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		}
 		if err := s.persistRuntime(r.Context(), space.ID, tableID, runtime); err != nil {
 			return err
+		}
+		if err := s.store.ReleaseTableSeat(r.Context(), user.ID, space.ID, tableID); err != nil {
+			s.logger.Error("release global table seat", "user_id", user.ID, "space_id", space.ID, "table_id", tableID, "error", err)
 		}
 		runtime.kickVote = nil
 		s.broadcast(space.ID, tableID, runtime)
@@ -456,6 +524,9 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return err
 	}
+	if err := s.store.ReleaseTableSeat(r.Context(), user.ID, space.ID, tableID); err != nil {
+		s.logger.Error("release global table seat", "user_id", user.ID, "space_id", space.ID, "table_id", tableID, "error", err)
+	}
 	runtime.kickVote = nil
 	if err := s.store.UpdateWalletOperation(r.Context(), operationID, "completed", ""); err != nil {
 		s.logger.Error("mark cash-out operation complete", "operation_id", operationID, "error", err)
@@ -466,6 +537,9 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 }
 
 func (s *Server) handleTableReady(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.requireGameplayControl(r, user.ID); err != nil {
+		return err
+	}
 	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
 	if err != nil {
 		return err
@@ -505,6 +579,9 @@ func (s *Server) handleTableReady(w http.ResponseWriter, r *http.Request, user s
 }
 
 func (s *Server) handleTableKickVote(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.requireGameplayControl(r, user.ID); err != nil {
+		return err
+	}
 	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
 	if err != nil {
 		return err
@@ -638,6 +715,9 @@ func (s *Server) cashOutPlayerLocked(ctx context.Context, space store.Space, tab
 		if err := s.persistRuntime(ctx, space.ID, tableID, runtime); err != nil {
 			return 0, err
 		}
+		if err := s.store.ReleaseTableSeat(ctx, targetUserID, space.ID, tableID); err != nil {
+			s.logger.Error("release global table seat", "user_id", targetUserID, "space_id", space.ID, "table_id", tableID, "error", err)
+		}
 		return 0, nil
 	}
 	member, err := s.store.Member(ctx, space.ID, targetUserID)
@@ -673,6 +753,9 @@ func (s *Server) cashOutPlayerLocked(ctx context.Context, space store.Space, tab
 	if err := s.persistRuntime(ctx, space.ID, tableID, runtime); err != nil {
 		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return 0, err
+	}
+	if err := s.store.ReleaseTableSeat(ctx, targetUserID, space.ID, tableID); err != nil {
+		s.logger.Error("release global table seat", "user_id", targetUserID, "space_id", space.ID, "table_id", tableID, "error", err)
 	}
 	if err := s.store.UpdateWalletOperation(ctx, operationID, "completed", ""); err != nil {
 		s.logger.Error("mark vote kick cash-out complete", "operation_id", operationID, "error", err)
@@ -716,6 +799,9 @@ func formatCents(cents int64) string {
 }
 
 func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user store.User) error {
+	if err := s.requireGameplayControl(r, user.ID); err != nil {
+		return err
+	}
 	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
 	if err != nil {
 		return err
@@ -733,6 +819,13 @@ func (s *Server) handleTableAction(w http.ResponseWriter, r *http.Request, user 
 		return err
 	}
 	defer runtime.mu.Unlock()
+	if input.ExpectedTurnID == 0 {
+		return &apiError{Status: http.StatusBadRequest, Message: "expected_turn_id 必须是刚读取到的当前轮次"}
+	}
+	current := runtime.commonSnapshot(user.ID)
+	if input.ExpectedTurnID != current.TurnID {
+		return &apiError{Status: http.StatusConflict, Message: "牌局轮次已经变化；请重新读取牌桌状态后再行动"}
+	}
 	if err := runtime.act(user.ID, input); err != nil {
 		return tableGameAPIError(err)
 	}

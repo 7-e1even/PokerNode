@@ -5,6 +5,7 @@ export interface User {
   id: number;
   username: string;
   display_name: string;
+  avatar_url?: string;
   role: UserRole;
   role_name?: string;
   status: UserStatus;
@@ -300,6 +301,7 @@ export interface WalletOperation {
 export interface ChannelLeaderboardEntry {
   user_id: number;
   display_name: string;
+  avatar_url?: string;
   net_cents: number;
   sessions: number;
 }

@@ -261,6 +261,23 @@ func (s *Server) userSeatedTableInSpace(ctx context.Context, spaceID string, use
 	return "", false, nil
 }
 
+func (s *Server) userSeatedTableGlobally(ctx context.Context, userID int64) (string, string, bool, error) {
+	states, err := s.store.TableStates(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, state := range states {
+		runtime, err := restoreTableRuntime(state.Data)
+		if err != nil {
+			return "", "", false, err
+		}
+		if runtime.isSeated(userID) {
+			return state.SpaceID, state.TableID, true, nil
+		}
+	}
+	return "", "", false, nil
+}
+
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request, user store.User) error {
 	space, member, token, err := s.memberCredentials(r, user.ID)
 	if err != nil {

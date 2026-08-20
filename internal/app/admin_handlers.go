@@ -152,6 +152,9 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, a
 	if !canManageRoles && role != string(access.RolePlayer) {
 		return &apiError{Status: http.StatusForbidden, Message: "运营账号只能创建玩家"}
 	}
+	if role == string(access.RoleSuperAdmin) && actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以创建超级管理员账号"}
+	}
 	if len(input.ManagedSpaceIDs) > 0 {
 		if !canManageRoles {
 			return &apiError{Status: http.StatusForbidden, Message: "当前账号不能分配频道管理范围"}
@@ -264,6 +267,10 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, a
 			return &apiError{Status: http.StatusForbidden, Message: "运营账号只能管理玩家账号，且不能修改角色"}
 		}
 	}
+	if (target.Role == string(access.RoleSuperAdmin) || role == string(access.RoleSuperAdmin)) &&
+		actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以管理超级管理员账号"}
+	}
 	managedSpaceIDs := target.ManagedSpaceIDs
 	if input.ManagedSpaceIDs != nil {
 		if !canManageRoles {
@@ -338,6 +345,9 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, a
 	}
 	if !canManageRoles && target.Role != string(access.RolePlayer) {
 		return &apiError{Status: http.StatusForbidden, Message: "运营账号只能删除玩家账号"}
+	}
+	if target.Role == string(access.RoleSuperAdmin) && actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以删除超级管理员账号"}
 	}
 	if err := s.store.DeleteUser(r.Context(), userID); err != nil {
 		switch {

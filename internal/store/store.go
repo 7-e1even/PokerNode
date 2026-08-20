@@ -24,6 +24,7 @@ var (
 	ErrSpaceMembershipRequired = errors.New("space membership required")
 	ErrExternalIdentityBound   = errors.New("external identity is bound to another user")
 	ErrExternalIdentitySet     = errors.New("user already has an external identity for this provider")
+	ErrActiveTableSeat         = errors.New("user already has an active table seat")
 )
 
 const externalLoginPasswordHash = "!external-login"
@@ -36,6 +37,7 @@ type User struct {
 	ID              int64    `json:"id"`
 	Username        string   `json:"username"`
 	DisplayName     string   `json:"display_name"`
+	AvatarURL       string   `json:"avatar_url,omitempty"`
 	PasswordHash    string   `json:"-"`
 	Role            string   `json:"role"`
 	RoleName        string   `json:"role_name"`
@@ -100,6 +102,14 @@ type MCPKey struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type ActiveTableSeat struct {
+	UserID     int64
+	SpaceID    string
+	TableID    string
+	Status     string
+	ReservedAt string
+}
+
 type WalletOperation struct {
 	ID           string `json:"id"`
 	SpaceID      string `json:"space_id"`
@@ -120,6 +130,7 @@ type WalletOperation struct {
 type ChannelLeaderboardEntry struct {
 	UserID      int64  `json:"user_id"`
 	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
 	NetCents    int64  `json:"net_cents"`
 	Sessions    int    `json:"sessions"`
 }
@@ -190,6 +201,7 @@ CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
   username TEXT NOT NULL,
   display_name TEXT NOT NULL,
+  avatar_url TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'player',
   status TEXT NOT NULL DEFAULT 'active',
@@ -274,7 +286,16 @@ CREATE TABLE IF NOT EXISTS table_states (
   state_json BYTEA NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (space_id, table_id)
-);`
+);
+CREATE TABLE IF NOT EXISTS active_table_seats (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  space_id TEXT NOT NULL,
+  table_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','active')),
+  reserved_at TEXT NOT NULL,
+  FOREIGN KEY (space_id, table_id) REFERENCES table_states(space_id, table_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS active_table_seats_table_idx ON active_table_seats(space_id, table_id);`
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
@@ -285,6 +306,12 @@ CREATE TABLE IF NOT EXISTS table_states (
 		return err
 	}
 	if err := s.ensureColumn("users", "ranking_hidden", "BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("users", "avatar_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("users", "agent_control_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("wallet_operations", "table_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -380,10 +407,10 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, passwordH
 
 func (s *Store) UserByExternalIdentity(ctx context.Context, provider, subject string) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden,u.avatar_url
 FROM auth_identities i JOIN users u ON u.id=i.user_id LEFT JOIN roles r ON r.key=u.role
 WHERE i.provider=$1 AND i.subject=$2`, provider, subject).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden, &user.AvatarURL)
 	return user, mapNotFound(err)
 }
 
@@ -393,7 +420,7 @@ func (s *Store) HasExternalIdentity(ctx context.Context, userID int64, provider 
 	return exists, err
 }
 
-func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displayName string) (User, error) {
+func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displayName, avatarURL string) (User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return User{}, err
@@ -403,7 +430,19 @@ func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displ
 	var existingUserID int64
 	err = tx.QueryRowContext(ctx, `SELECT user_id FROM auth_identities WHERE provider=$1 AND subject=$2`, provider, subject).Scan(&existingUserID)
 	if err == nil {
-		return userByID(ctx, tx, existingUserID)
+		if avatarURL = strings.TrimSpace(avatarURL); avatarURL != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2`, avatarURL, existingUserID); err != nil {
+				return User{}, err
+			}
+		}
+		user, err := userByID(ctx, tx, existingUserID)
+		if err != nil {
+			return User{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return User{}, err
+		}
+		return user, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return User{}, err
@@ -440,6 +479,12 @@ func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displ
 	if err != nil {
 		return User{}, err
 	}
+	if avatarURL = strings.TrimSpace(avatarURL); avatarURL != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2`, avatarURL, user.ID); err != nil {
+			return User{}, err
+		}
+		user.AvatarURL = avatarURL
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_identities(provider,subject,user_id,created_at) VALUES($1,$2,$3,$4)`, provider, subject, user.ID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return User{}, err
 	}
@@ -449,7 +494,7 @@ func (s *Store) CreateExternalUser(ctx context.Context, provider, subject, displ
 	return user, nil
 }
 
-func (s *Store) BindExternalIdentity(ctx context.Context, userID int64, provider, subject string) error {
+func (s *Store) BindExternalIdentity(ctx context.Context, userID int64, provider, subject, avatarURL string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -479,6 +524,11 @@ func (s *Store) BindExternalIdentity(ctx context.Context, userID int64, provider
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_identities(provider,subject,user_id,created_at) VALUES($1,$2,$3,$4)`, provider, subject, userID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
+	}
+	if avatarURL = strings.TrimSpace(avatarURL); avatarURL != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_url=$1 WHERE id=$2`, avatarURL, userID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -513,8 +563,8 @@ func createUser(ctx context.Context, queryer sqlQueryer, username, displayName, 
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE LOWER(u.username)=LOWER($1)`, username).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden,u.avatar_url FROM users u LEFT JOIN roles r ON r.key=u.role WHERE LOWER(u.username)=LOWER($1)`, username).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden, &user.AvatarURL)
 	return user, mapNotFound(err)
 }
 
@@ -524,10 +574,10 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 
 func (s *Store) UserByMCPKeyHash(ctx context.Context, hash []byte) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden,u.avatar_url
 FROM mcp_keys k JOIN users u ON u.id=k.user_id LEFT JOIN roles r ON r.key=u.role
 WHERE k.key_hash=$1`, hash).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden, &user.AvatarURL)
 	return user, mapNotFound(err)
 }
 
@@ -549,7 +599,102 @@ RETURNING user_id,key_last4,created_at`, userID, hash, last4, createdAt).
 }
 
 func (s *Store) DeleteMCPKey(ctx context.Context, userID int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_keys WHERE user_id=$1`, userID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mcp_keys WHERE user_id=$1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET agent_control_enabled=FALSE WHERE id=$1`, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) AgentControlEnabled(ctx context.Context, userID int64) (bool, error) {
+	var enabled bool
+	err := s.db.QueryRowContext(ctx, `SELECT agent_control_enabled FROM users WHERE id=$1`, userID).Scan(&enabled)
+	return enabled, mapNotFound(err)
+}
+
+func (s *Store) SetAgentControlEnabled(ctx context.Context, userID int64, enabled bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET agent_control_enabled=$1 WHERE id=$2`, enabled, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ReserveActiveTableSeat(ctx context.Context, userID int64, spaceID, tableID string) (ActiveTableSeat, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ActiveTableSeat{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	reservedAt := now.Format(time.RFC3339Nano)
+	staleBefore := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	for attempt := 0; attempt < 2; attempt++ {
+		var seat ActiveTableSeat
+		err := tx.QueryRowContext(ctx, `INSERT INTO active_table_seats(user_id,space_id,table_id,status,reserved_at)
+VALUES($1,$2,$3,'pending',$4) ON CONFLICT(user_id) DO NOTHING
+RETURNING user_id,space_id,table_id,status,reserved_at`, userID, spaceID, tableID, reservedAt).
+			Scan(&seat.UserID, &seat.SpaceID, &seat.TableID, &seat.Status, &seat.ReservedAt)
+		if err == nil {
+			if err := tx.Commit(); err != nil {
+				return ActiveTableSeat{}, err
+			}
+			return seat, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ActiveTableSeat{}, err
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM active_table_seats WHERE user_id=$1 AND status='pending' AND reserved_at<$2`, userID, staleBefore)
+		if err != nil {
+			return ActiveTableSeat{}, err
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return ActiveTableSeat{}, err
+		}
+		if deleted == 0 {
+			break
+		}
+	}
+	var existing ActiveTableSeat
+	if err := tx.QueryRowContext(ctx, `SELECT user_id,space_id,table_id,status,reserved_at FROM active_table_seats WHERE user_id=$1`, userID).
+		Scan(&existing.UserID, &existing.SpaceID, &existing.TableID, &existing.Status, &existing.ReservedAt); err != nil {
+		return ActiveTableSeat{}, err
+	}
+	return existing, ErrActiveTableSeat
+}
+
+func (s *Store) ActivateTableSeat(ctx context.Context, userID int64, spaceID, tableID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE active_table_seats SET status='active' WHERE user_id=$1 AND space_id=$2 AND table_id=$3`, userID, spaceID, tableID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ReleaseTableSeat(ctx context.Context, userID int64, spaceID, tableID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM active_table_seats WHERE user_id=$1 AND space_id=$2 AND table_id=$3`, userID, spaceID, tableID)
 	return err
 }
 
@@ -559,20 +704,20 @@ type sqlQueryer interface {
 
 func userByID(ctx context.Context, queryer sqlQueryer, id int64) (User, error) {
 	var user User
-	err := queryer.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.id=$1`, id).
-		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden)
+	err := queryer.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden,u.avatar_url FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.id=$1`, id).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden, &user.AvatarURL)
 	return user, mapNotFound(err)
 }
 
 func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.status<>'deleted' ORDER BY u.created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,u.password_hash,u.role,COALESCE(r.name,u.role),u.status,u.created_at,u.ranking_hidden,u.avatar_url FROM users u LEFT JOIN roles r ON r.key=u.role WHERE u.status<>'deleted' ORDER BY u.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	users := make([]User, 0)
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.RoleName, &user.Status, &user.CreatedAt, &user.RankingHidden, &user.AvatarURL); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1019,7 +1164,7 @@ func (s *Store) WalletOperations(ctx context.Context, spaceID string, userID int
 }
 
 func (s *Store) ChannelLeaderboard(ctx context.Context, spaceID string) ([]ChannelLeaderboardEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
   WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
@@ -1030,7 +1175,7 @@ FROM space_members m
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
 WHERE m.space_id=$1 AND u.ranking_hidden=FALSE
-GROUP BY u.id,u.display_name
+GROUP BY u.id,u.display_name,u.avatar_url
 ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
 	if err != nil {
 		return nil, err
@@ -1039,7 +1184,7 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
 	entries := make([]ChannelLeaderboardEntry, 0)
 	for rows.Next() {
 		var entry ChannelLeaderboardEntry
-		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.NetCents, &entry.Sessions); err != nil {
+		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.AvatarURL, &entry.NetCents, &entry.Sessions); err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
@@ -1048,7 +1193,7 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
 }
 
 func (s *Store) LobbyLeaderboard(ctx context.Context, userID int64) ([]ChannelLeaderboardEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
   WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
@@ -1060,7 +1205,7 @@ JOIN space_members m ON m.space_id=viewer.space_id
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
 WHERE viewer.user_id=$1 AND u.ranking_hidden=FALSE
-GROUP BY u.id,u.display_name
+GROUP BY u.id,u.display_name,u.avatar_url
 ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, userID)
 	if err != nil {
 		return nil, err
@@ -1069,7 +1214,7 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, userID)
 	entries := make([]ChannelLeaderboardEntry, 0)
 	for rows.Next() {
 		var entry ChannelLeaderboardEntry
-		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.NetCents, &entry.Sessions); err != nil {
+		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.AvatarURL, &entry.NetCents, &entry.Sessions); err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)

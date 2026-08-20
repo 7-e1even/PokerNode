@@ -165,7 +165,7 @@ func (s *Server) handleWeChatCallback(w http.ResponseWriter, r *http.Request) {
 			s.redirectWeChatResult(w, r, flow, "session_expired")
 			return
 		}
-		if err := s.store.BindExternalIdentity(r.Context(), user.ID, wechatProviderName, profile.Subject()); err != nil {
+		if err := s.store.BindExternalIdentity(r.Context(), user.ID, wechatProviderName, profile.Subject(), profile.AvatarURL); err != nil {
 			switch {
 			case errors.Is(err, store.ErrExternalIdentityBound):
 				s.redirectWeChatResult(w, r, flow, "already_bound")
@@ -181,7 +181,7 @@ func (s *Server) handleWeChatCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.CreateExternalUser(r.Context(), wechatProviderName, profile.Subject(), profile.Nickname)
+	user, err := s.store.CreateExternalUser(r.Context(), wechatProviderName, profile.Subject(), profile.Nickname, profile.AvatarURL)
 	if err != nil {
 		if errors.Is(err, store.ErrRegistrationClosed) {
 			s.redirectWeChatResult(w, r, flow, "registration_closed")

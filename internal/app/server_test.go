@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"pokernode/internal/auth"
 	"pokernode/internal/landlord"
 	"pokernode/internal/poker"
@@ -96,7 +97,7 @@ func TestUpdateOwnCredentials(t *testing.T) {
 		"username": "alice_new", "password": "new-password-1",
 	}, http.StatusOK, nil)
 
-	external, err := database.CreateExternalUser(context.Background(), "wechat", "credential-test-subject", "微信用户")
+	external, err := database.CreateExternalUser(context.Background(), "wechat", "credential-test-subject", "微信用户", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +408,7 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables/"+mainTableID, nil, http.StatusNotFound, nil)
 }
 
-func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
+func TestPlayerCanOnlyJoinOneTableGlobally(t *testing.T) {
 	upstream := &fakeNewAPI{
 		users: map[string]map[string]any{
 			"admin-token":  {"id": int64(99), "username": "root", "display_name": "Root", "role": 100, "status": 1},
@@ -430,6 +431,9 @@ func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
 	application := NewServer(database, cipher, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	appServer := httptest.NewServer(application.Handler(filepath.Join(t.TempDir(), "missing-web")))
 	defer appServer.Close()
+	secondApplication := NewServer(database, cipher, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	secondAppServer := httptest.NewServer(secondApplication.Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer secondAppServer.Close()
 
 	player := newTestClient(t)
 	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{
@@ -454,13 +458,77 @@ func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
 	requestJSON(t, player, http.MethodPost, spacePath+"/tables", map[string]any{
 		"game_type": "landlord", "name": "Landlord", "base_stake_cents": 100,
 	}, http.StatusCreated, &landlordTable)
-	landlordPath := spacePath + "/tables/" + landlordTable.Table.ID
+	secondLandlordPath := secondAppServer.URL + "/api/spaces/" + created.Space.ID + "/tables/" + landlordTable.Table.ID
+
+	var otherSpace struct {
+		Space struct {
+			ID string `json:"id"`
+		} `json:"space"`
+	}
+	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/spaces", map[string]any{
+		"name": "Other channel", "newapi_base_url": newAPIServer.URL, "admin_token": "admin-token", "quota_per_usd": 500_000,
+	}, http.StatusCreated, &otherSpace)
+	otherSpacePath := appServer.URL + "/api/spaces/" + otherSpace.Space.ID
+	requestJSON(t, player, http.MethodPost, otherSpacePath+"/bind", map[string]string{"token": "player-token"}, http.StatusOK, nil)
+	var otherLandlord struct {
+		Table struct {
+			ID string `json:"id"`
+		} `json:"table"`
+	}
+	requestJSON(t, player, http.MethodPost, otherSpacePath+"/tables", map[string]any{
+		"game_type": "landlord", "name": "Other landlord", "base_stake_cents": 100,
+	}, http.StatusCreated, &otherLandlord)
+	otherLandlordPath := secondAppServer.URL + "/api/spaces/" + otherSpace.Space.ID + "/tables/" + otherLandlord.Table.ID
+
+	var mcpKey struct {
+		Key string `json:"mcp_key"`
+	}
+	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/me/mcp-key", nil, http.StatusCreated, &mcpKey)
+	mcpSession, err := connectApplicationMCP(appServer.URL+"/mcp", mcpKey.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mcpSession.Close()
+	joinArgs := map[string]any{"space_id": created.Space.ID, "table_id": mainTableID, "buy_in_cents": 2_000}
+	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_join_table", Arguments: joinArgs}); callErr == nil && !result.IsError {
+		t.Fatal("MCP joined before the user enabled Agent control")
+	}
+	requestJSON(t, player, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": true}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
+	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_join_table", Arguments: joinArgs}); callErr != nil || result.IsError {
+		t.Fatalf("MCP could not join after handoff: result=%#v err=%v", result, callErr)
+	}
+	current, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_get_current_game", Arguments: map[string]any{}})
+	if callErr != nil || current.IsError {
+		t.Fatalf("MCP could not discover its current game: result=%#v err=%v", current, callErr)
+	}
+	encodedCurrent, err := json.Marshal(current.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var currentOutput struct {
+		Active  bool   `json:"active"`
+		SpaceID string `json:"space_id"`
+		TableID string `json:"table_id"`
+	}
+	if err := json.Unmarshal(encodedCurrent, &currentOutput); err != nil {
+		t.Fatal(err)
+	}
+	if !currentOutput.Active || currentOutput.SpaceID != created.Space.ID || currentOutput.TableID != mainTableID {
+		t.Fatalf("unexpected current game: %#v", currentOutput)
+	}
+	requestJSON(t, player, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusConflict, nil)
+	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_leave_table", Arguments: map[string]any{"space_id": created.Space.ID, "table_id": mainTableID}}); callErr != nil || result.IsError {
+		t.Fatalf("MCP could not leave during handoff: result=%#v err=%v", result, callErr)
+	}
+	requestJSON(t, player, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": false}, http.StatusOK, nil)
 
 	requestJSON(t, player, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
-	requestJSON(t, player, http.MethodPost, landlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
+	requestJSON(t, player, http.MethodPost, secondLandlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
+	requestJSON(t, player, http.MethodPost, otherLandlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
 	requestJSON(t, player, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
-	requestJSON(t, player, http.MethodPost, landlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
-	requestJSON(t, player, http.MethodPost, landlordPath+"/leave", map[string]any{}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, otherLandlordPath+"/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	requestJSON(t, player, http.MethodPost, otherLandlordPath+"/leave", map[string]any{}, http.StatusOK, nil)
 
 	type joinResult struct {
 		leaveEndpoint string
@@ -493,7 +561,7 @@ func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan joinResult, 2)
 	go join(spacePath+"/table/join", spacePath+"/table/leave", start, results)
-	go join(landlordPath+"/join", landlordPath+"/leave", start, results)
+	go join(otherLandlordPath+"/join", otherLandlordPath+"/leave", start, results)
 	close(start)
 	concurrentResults := []joinResult{<-results, <-results}
 	var successfulLeave string
@@ -528,8 +596,14 @@ func TestPlayerCanOnlyJoinOneTablePerChannel(t *testing.T) {
 			seatedTables++
 		}
 	}
+	requestJSON(t, player, http.MethodGet, otherSpacePath+"/tables", nil, http.StatusOK, &tables)
+	for _, table := range tables.Tables {
+		if table.ViewerSeated {
+			seatedTables++
+		}
+	}
 	if seatedTables != 1 {
-		t.Fatalf("player should be seated at exactly one table, got %d", seatedTables)
+		t.Fatalf("player should be seated at exactly one global table, got %d", seatedTables)
 	}
 	requestJSON(t, player, http.MethodPost, successfulLeave, map[string]any{}, http.StatusOK, nil)
 
@@ -663,7 +737,12 @@ func TestTableKickVoteAndAdminCleanupFlows(t *testing.T) {
 	if voteResponse.Table.Allowed.CanAct {
 		actingClient = bob
 	}
-	requestJSON(t, actingClient, http.MethodPost, spacePath+"/table/action", map[string]any{"action": "fold"}, http.StatusOK, nil)
+	requestJSON(t, actingClient, http.MethodPost, spacePath+"/table/action", map[string]any{
+		"action": "fold", "expected_turn_id": voteResponse.Table.TurnID + 1,
+	}, http.StatusConflict, nil)
+	requestJSON(t, actingClient, http.MethodPost, spacePath+"/table/action", map[string]any{
+		"action": "fold", "expected_turn_id": voteResponse.Table.TurnID,
+	}, http.StatusOK, nil)
 	requestJSON(t, alice, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 
@@ -976,6 +1055,29 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{"username": "renamed_player", "password": "new-password-3"}, http.StatusUnauthorized, nil)
 	requestJSON(t, operator, http.MethodDelete, appServer.URL+"/api/admin/users/1", nil, http.StatusForbidden, nil)
 	requestJSON(t, admin, http.MethodDelete, appServer.URL+"/api/admin/users/1", nil, http.StatusBadRequest, nil)
+
+	// 拥有 roles:manage 的账号不得创建、修改、提升或删除超级管理员。
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/roles", map[string]any{
+		"key": "role_admin", "name": "角色管理员", "description": "管理角色与账号", "permissions": []string{"admin:view", "users:read", "users:manage", "roles:manage"},
+	}, http.StatusCreated, nil)
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "roleadmin", "display_name": "RoleAdmin", "password": "password-6", "role": "role_admin"}, http.StatusCreated, nil)
+	roleAdmin := newTestClient(t)
+	requestJSON(t, roleAdmin, http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "roleadmin", "password": "password-6"}, http.StatusOK, nil)
+	requestJSON(t, roleAdmin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "eviladmin", "display_name": "Evil", "password": "password-7", "role": "super_admin"}, http.StatusForbidden, nil)
+	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/1", map[string]string{"password": "hacked-password"}, http.StatusForbidden, nil)
+	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/1", map[string]string{"role": "player", "status": "disabled"}, http.StatusForbidden, nil)
+	requestJSON(t, roleAdmin, http.MethodDelete, appServer.URL+"/api/admin/users/1", nil, http.StatusForbidden, nil)
+	var pawnResult struct {
+		User store.User `json:"user"`
+	}
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "pawn", "display_name": "Pawn", "password": "password-8", "role": "player"}, http.StatusCreated, &pawnResult)
+	pawnID := strconv.FormatInt(pawnResult.User.ID, 10)
+	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/"+pawnID, map[string]string{"role": "super_admin"}, http.StatusForbidden, nil)
+	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/"+pawnID, map[string]string{"status": "disabled"}, http.StatusOK, nil)
+	requestJSON(t, roleAdmin, http.MethodDelete, appServer.URL+"/api/admin/users/"+pawnID, nil, http.StatusNoContent, nil)
+	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{"username": "admin", "password": "hacked-password"}, http.StatusUnauthorized, nil)
+	// 超级管理员本人仍然可以创建超管账号。
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "admin2", "display_name": "Admin2", "password": "password-9", "role": "super_admin"}, http.StatusCreated, nil)
 
 	requestJSON(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/registration", map[string]bool{"enabled": false}, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "blocked", "display_name": "Blocked", "password": "password-4"}, http.StatusForbidden, nil)

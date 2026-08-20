@@ -20,6 +20,17 @@ type mcpKeyStatus struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
+type mcpRequestContextKey struct{}
+
+func isMCPRequest(r *http.Request) bool {
+	value, _ := r.Context().Value(mcpRequestContextKey{}).(bool)
+	return value
+}
+
+func asMCPRequest(r *http.Request) *http.Request {
+	return r.Clone(context.WithValue(r.Context(), mcpRequestContextKey{}, true))
+}
+
 func (s *Server) handleMCPKeyStatus(w http.ResponseWriter, r *http.Request, user store.User) error {
 	w.Header().Set("Cache-Control", "no-store")
 	key, err := s.store.MCPKeyForUser(r.Context(), user.ID)
@@ -54,6 +65,52 @@ func (s *Server) handleDeleteMCPKey(w http.ResponseWriter, r *http.Request, user
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Server) handleAgentControlStatus(w http.ResponseWriter, r *http.Request, user store.User) error {
+	w.Header().Set("Cache-Control", "no-store")
+	enabled, err := s.store.AgentControlEnabled(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
+	return nil
+}
+
+func (s *Server) handleAgentControlUpdate(w http.ResponseWriter, r *http.Request, user store.User) error {
+	w.Header().Set("Cache-Control", "no-store")
+	var input struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	if input.Enabled {
+		if _, err := s.store.MCPKeyForUser(r.Context(), user.ID); errors.Is(err, store.ErrNotFound) {
+			return &apiError{Status: http.StatusConflict, Message: "请先生成 MCP Key，再开启 Agent 托管"}
+		} else if err != nil {
+			return err
+		}
+	}
+	if err := s.store.SetAgentControlEnabled(r.Context(), user.ID, input.Enabled); err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": input.Enabled})
+	return nil
+}
+
+func (s *Server) requireGameplayControl(r *http.Request, userID int64) error {
+	enabled, err := s.store.AgentControlEnabled(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	if isMCPRequest(r) && !enabled {
+		return &apiError{Status: http.StatusConflict, Message: "Agent 托管尚未开启；请由玩家在 Agent MCP 设置中开启后重试"}
+	}
+	if !isMCPRequest(r) && enabled {
+		return &apiError{Status: http.StatusConflict, Message: "当前牌局已交给 Agent 托管；请先在 Agent MCP 设置中收回控制"}
+	}
 	return nil
 }
 
@@ -100,6 +157,7 @@ func (transport handlerRoundTripper) RoundTrip(request *http.Request) (*http.Res
 	if request.URL.Scheme != "http" || request.URL.Host != "pokernode.internal" {
 		return nil, fmt.Errorf("unexpected internal MCP target %s", request.URL.Redacted())
 	}
+	request = asMCPRequest(request)
 	recorder := httptest.NewRecorder()
 	transport.handler.ServeHTTP(recorder, request)
 	response := recorder.Result()

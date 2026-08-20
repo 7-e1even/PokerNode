@@ -33,7 +33,7 @@ func (f *fakeWeChatProvider) Authenticate(_ context.Context, _ string) (wechat.P
 }
 
 func TestWeChatAutoRegistrationAndExistingLogin(t *testing.T) {
-	provider := &fakeWeChatProvider{profile: wechat.Profile{OpenID: "open-alice", UnionID: "union-alice", Nickname: "微信 Alice"}}
+	provider := &fakeWeChatProvider{profile: wechat.Profile{OpenID: "open-alice", UnionID: "union-alice", Nickname: "微信 Alice", AvatarURL: "https://thirdwx.qlogo.cn/alice/132"}}
 	appServer, database := newWeChatTestServer(t, provider)
 	defer appServer.Close()
 	defer database.Close()
@@ -44,10 +44,11 @@ func TestWeChatAutoRegistrationAndExistingLogin(t *testing.T) {
 		User authenticatedUser `json:"user"`
 	}
 	requestJSON(t, firstClient, http.MethodGet, appServer.URL+"/api/me", nil, http.StatusOK, &firstSession)
-	if firstSession.User.DisplayName != "微信 Alice" || firstSession.User.Role != "super_admin" || !firstSession.User.WeChatBound {
+	if firstSession.User.DisplayName != "微信 Alice" || firstSession.User.AvatarURL != "https://thirdwx.qlogo.cn/alice/132" || firstSession.User.Role != "super_admin" || !firstSession.User.WeChatBound {
 		t.Fatalf("unexpected auto-registered user: %#v", firstSession.User)
 	}
 
+	provider.profile.AvatarURL = "https://thirdwx.qlogo.cn/alice-updated/132"
 	secondClient := newTestClient(t)
 	completeWeChatAuth(t, secondClient, appServer.URL, "/api/auth/wechat/start", "wechat-code-again", "")
 	var secondSession struct {
@@ -57,10 +58,13 @@ func TestWeChatAutoRegistrationAndExistingLogin(t *testing.T) {
 	if secondSession.User.ID != firstSession.User.ID {
 		t.Fatalf("existing wechat identity created another user: first=%d second=%d", firstSession.User.ID, secondSession.User.ID)
 	}
+	if secondSession.User.AvatarURL != provider.profile.AvatarURL {
+		t.Fatalf("existing wechat avatar is %q, want %q", secondSession.User.AvatarURL, provider.profile.AvatarURL)
+	}
 }
 
 func TestExistingUserCanBindWeChat(t *testing.T) {
-	provider := &fakeWeChatProvider{profile: wechat.Profile{OpenID: "open-legacy", Nickname: "Legacy WeChat"}}
+	provider := &fakeWeChatProvider{profile: wechat.Profile{OpenID: "open-legacy", Nickname: "Legacy WeChat", AvatarURL: "https://thirdwx.qlogo.cn/legacy/132"}}
 	appServer, database := newWeChatTestServer(t, provider)
 	defer appServer.Close()
 	defer database.Close()
@@ -78,7 +82,7 @@ func TestExistingUserCanBindWeChat(t *testing.T) {
 		User authenticatedUser `json:"user"`
 	}
 	requestJSON(t, legacyClient, http.MethodGet, appServer.URL+"/api/me", nil, http.StatusOK, &linked)
-	if linked.User.ID != registered.User.ID || !linked.User.WeChatBound {
+	if linked.User.ID != registered.User.ID || linked.User.AvatarURL != provider.profile.AvatarURL || !linked.User.WeChatBound {
 		t.Fatalf("legacy user was not linked: %#v", linked.User)
 	}
 

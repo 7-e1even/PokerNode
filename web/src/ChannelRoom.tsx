@@ -6,7 +6,7 @@ import {
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -364,10 +364,10 @@ function LeaderboardCard({ entries, players, currentUserID, loading, error }: {
                 const active = activePlayers.get(entry.user_id);
                 return (
                   <div className="flex items-center gap-3 rounded-lg px-2 py-3" key={entry.user_id}>
-                    <Badge className="size-7 shrink-0 justify-center rounded-full p-0" variant={index === 0 ? "default" : "outline"}>{index === 0 ? <Crown /> : index + 1}</Badge>
-                    <Avatar><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
+                    <Badge className="size-7 shrink-0 justify-center rounded-full p-0" variant="outline">{index === 0 ? <Crown aria-label="第一名" className="fill-current text-winner" /> : index + 1}</Badge>
+                    <Avatar><AvatarImage src={entry.avatar_url} alt={entry.display_name} /><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar>
                     <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="truncate text-sm">{entry.display_name}</strong>{entry.user_id === currentUserID && <Badge variant="secondary">我</Badge>}</div><p className="truncate text-xs text-muted-foreground">{active ? `${tableDisplayName(active.tableName)} · 桌上 ${money(active.stack_cents)}` : entry.sessions > 0 ? `${entry.sessions} 次买入` : "尚未开局"}</p></div>
-                    <strong className="shrink-0 tabular-nums">{netMoney(entry.currentNetCents)}</strong>
+                    <strong className={cn("shrink-0 tabular-nums", entry.currentNetCents > 0 && "text-success", entry.currentNetCents < 0 && "text-destructive", entry.currentNetCents === 0 && "text-muted-foreground")}>{netMoney(entry.currentNetCents)}</strong>
                   </div>
                 );
               })}

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEventHandler } from "react";
-import { ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Crown, DoorOpen, LogOut, Play, Spade, X } from "lucide-react";
+import { ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Crown, DoorOpen, LogOut, MoreHorizontal, Play, Spade, X } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, AvatarBadge, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
@@ -130,21 +131,42 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
 
   return (
     <main className="flex h-svh min-h-0 flex-col overflow-hidden bg-muted/30">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-3 sm:px-5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Button size="icon" variant="ghost" onClick={onBack} aria-label="返回频道"><ArrowLeft /></Button>
-          <BrandMark className="size-8 shrink-0" aria-hidden="true" />
-          <div className="min-w-0"><h1 className="truncate font-heading text-sm font-semibold">{table?.name || initialTable.name}</h1><p className="truncate text-xs text-muted-foreground">斗地主 · 底分 {money(table?.base_stake_cents ?? initialTable.base_stake_cents ?? 0)}</p></div>
-        </div>
-        <div className="flex items-center gap-1 sm:gap-2">
-          <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden sm:inline-flex">{connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}</Badge>
-          {space.is_bound && <Button size="sm" variant="ghost" onClick={() => void loadBalance()}><CircleDollarSign data-icon="inline-start" /><span className="hidden sm:inline">{balance ? money(balance.cents) : "—"}</span></Button>}
-          <Button size="icon" variant="ghost" onClick={() => setRulesOpen(true)} aria-label="斗地主规则"><CircleHelp /></Button>
-          <Button size="sm" variant="outline" onClick={onBack}><DoorOpen data-icon="inline-start" /><span className="hidden sm:inline">离开牌桌</span></Button>
-        </div>
-      </header>
+      <section className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="landlord-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 p-2 sm:p-3">
+          <div className="landlord-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
+            <Button size="icon" variant="ghost" onClick={onBack} aria-label="返回频道"><ArrowLeft /></Button>
+            <BrandMark className="size-7 shrink-0" aria-hidden="true" />
+            <div className="min-w-0 pl-1">
+              <h1 className="truncate font-heading text-sm font-semibold">{table?.name || initialTable.name}</h1>
+              <p className="hidden truncate text-xs text-muted-foreground md:block">斗地主 · 底分 {money(table?.base_stake_cents ?? initialTable.base_stake_cents ?? 0)}</p>
+            </div>
+          </div>
 
-      <section className="min-h-0 flex-1 overflow-hidden">
+          <div className="landlord-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+            <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">{connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}</Badge>
+            {space.is_bound && (
+              <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
+                <CircleDollarSign data-icon="inline-start" />
+                <span className="hidden lg:inline">{balance ? money(balance.cents) : "—"}</span>
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />斗地主规则</DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
         {table ? <LandlordTable table={table} user={user} spaceID={space.id} tableID={initialTable.id} onChanged={setTable} onBalanceChanged={() => void loadBalance()} /> : <LandlordLoading />}
         {!space.is_bound && membership && <BindPanel space={space} onBound={(nextMembership, nextBalance) => { setMembership(nextMembership); setBalance(nextBalance); setSpace((current) => ({ ...current, is_bound: true })); toast.success("个人凭证已绑定"); }} />}
       </section>
@@ -203,7 +225,10 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, onBalanceChan
   async function run(path: string, body?: unknown, balanceChanged = false) {
     setBusy(true);
     try {
-      const result = await post<LandlordTableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, body);
+      const requestBody = path === "action" && body && typeof body === "object"
+        ? { ...body, expected_turn_id: table.turn_id }
+        : body;
+      const result = await post<LandlordTableEnvelope>(`/api/spaces/${spaceID}/tables/${tableID}/${path}`, requestBody);
       onChanged(result.table);
       setSelected([]);
       if (result.notice) toast.success(result.notice);
