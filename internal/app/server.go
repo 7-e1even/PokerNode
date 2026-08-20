@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,7 @@ type Server struct {
 	cipher                  *secure.Cipher
 	sessions                *auth.Sessions
 	newAPI                  *newapi.Client
+	wechatMu                sync.RWMutex
 	wechat                  *wechatAuth
 	hub                     *realtime.Hub
 	logger                  *slog.Logger
@@ -61,7 +63,13 @@ type ServerOption func(*Server)
 
 func WithWeChat(redirectURL string, provider wechatProvider) ServerOption {
 	return func(server *Server) {
-		server.wechat = &wechatAuth{redirectURL: redirectURL, provider: provider}
+		server.wechat = &wechatAuth{redirectURL: redirectURL, provider: provider, secretConfigured: true, source: "environment"}
+	}
+}
+
+func WithWeChatCredentials(appID, redirectURL string, provider wechatProvider) ServerOption {
+	return func(server *Server) {
+		server.wechat = &wechatAuth{appID: appID, redirectURL: redirectURL, provider: provider, secretConfigured: true, source: "environment"}
 	}
 }
 
@@ -83,6 +91,9 @@ func NewServer(database *store.Store, cipher *secure.Cipher, sessions *auth.Sess
 	}
 	for _, option := range options {
 		option(server)
+	}
+	if err := server.reloadStoredWeChat(context.Background()); err != nil {
+		server.logger.Error("load stored wechat settings", "error", err)
 	}
 	return server
 }
@@ -124,6 +135,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/spaces/{spaceID}/managed-balances", s.withUser(s.handleManagedBalances))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/managed-balances/{userID}/adjust", s.withUser(s.handleAdjustManagedBalance))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/operations", s.withUser(s.handleOperations))
+	mux.HandleFunc("GET /api/spaces/{spaceID}/hands", s.withUser(s.handleHandHistories))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/leaderboard", s.withUser(s.handleChannelLeaderboard))
 	mux.HandleFunc("GET /api/spaces/{spaceID}/messages", s.withUser(s.handleListSpaceMessages))
 	mux.HandleFunc("POST /api/spaces/{spaceID}/messages", s.withUser(s.handleCreateSpaceMessage))
@@ -160,6 +172,7 @@ func (s *Server) Handler(webRoot string) http.Handler {
 	mux.HandleFunc("PATCH /api/admin/roles/{roleKey}", s.withPermission(access.PermissionRolesManage, s.handleAdminUpdateRole))
 	mux.HandleFunc("DELETE /api/admin/roles/{roleKey}", s.withPermission(access.PermissionRolesManage, s.handleAdminDeleteRole))
 	mux.HandleFunc("PUT /api/admin/settings/registration", s.withPermission(access.PermissionRegistrationManage, s.handleAdminRegistration))
+	mux.HandleFunc("PUT /api/admin/settings/wechat", s.withUser(s.handleAdminWeChatSettings))
 	mux.HandleFunc("PUT /api/admin/settings/login-hero", s.withUser(s.handleAdminLoginHeroImage))
 	mux.HandleFunc("PATCH /api/admin/settings/login-hero", s.withUser(s.handleAdminUpdateLoginHeroPlacement))
 	mux.HandleFunc("DELETE /api/admin/settings/login-hero", s.withUser(s.handleAdminDeleteLoginHeroImage))

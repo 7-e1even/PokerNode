@@ -14,10 +14,10 @@ const sectionCopy: Record<AdminSection, { title: string; description: string }> 
   channels: { title: "频道管理", description: "查看有权管理的频道、成员绑定、牌桌和结算状态" },
   balances: { title: "余额管理", description: "查看并调整全部频道成员的 New API 余额" },
   rankings: { title: "排名管理", description: "控制哪些账号会出现在频道排行榜中" },
-  settings: { title: "系统设置", description: "控制平台注册策略与登录页展示" },
+  settings: { title: "系统设置", description: "控制登录方式、注册策略与登录页展示" },
 };
 
-export default function AdminDashboard({ user, section, onSectionChanged, onOpenLobby, onOpenSettings, onLogout, onRegistrationChanged, onLoginHeroChanged }: {
+export default function AdminDashboard({ user, section, onSectionChanged, onOpenLobby, onOpenSettings, onLogout, onRegistrationChanged, onLoginHeroChanged, onWeChatLoginChanged }: {
   user: User;
   section: AdminSection;
   onSectionChanged: (section: AdminSection) => void;
@@ -26,6 +26,7 @@ export default function AdminDashboard({ user, section, onSectionChanged, onOpen
   onLogout: () => void;
   onRegistrationChanged: (enabled: boolean) => void;
   onLoginHeroChanged: (config: LoginHeroConfig) => void;
+  onWeChatLoginChanged: (enabled: boolean) => void;
 }) {
   const copy = useMemo(() => sectionCopy[section], [section]);
 
@@ -39,7 +40,7 @@ export default function AdminDashboard({ user, section, onSectionChanged, onOpen
       <AppSidebar user={user} active={section} onNavigate={onSectionChanged} />
       <SidebarInset className="min-h-svh overflow-hidden">
         <SiteHeader title={copy.title} description={copy.description} actions={<NavUser user={user} onOpenLobby={onOpenLobby} onOpenSettings={onOpenSettings} onLogout={() => void logout()} />} />
-        <AdminConsole currentUser={user} section={section} onRegistrationChanged={onRegistrationChanged} onLoginHeroChanged={onLoginHeroChanged} />
+        <AdminConsole currentUser={user} section={section} onRegistrationChanged={onRegistrationChanged} onLoginHeroChanged={onLoginHeroChanged} onWeChatLoginChanged={onWeChatLoginChanged} />
       </SidebarInset>
     </SidebarProvider>
   );

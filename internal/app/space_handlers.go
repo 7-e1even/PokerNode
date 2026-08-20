@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -304,6 +305,37 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request, user s
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"operations": operations})
+	return nil
+}
+
+func (s *Server) handleHandHistories(w http.ResponseWriter, r *http.Request, user store.User) error {
+	space, err := s.store.SpaceForUser(r.Context(), r.PathValue("spaceID"), user.ID)
+	if err != nil {
+		return err
+	}
+	histories, err := s.store.HandHistories(r.Context(), space.ID, user.ID)
+	if err != nil {
+		return err
+	}
+	type handHistoryView struct {
+		TableID     string         `json:"table_id"`
+		HandID      int64          `json:"hand_id"`
+		GameType    string         `json:"game_type"`
+		CompletedAt string         `json:"completed_at"`
+		Table       poker.Snapshot `json:"table"`
+	}
+	views := make([]handHistoryView, 0, len(histories))
+	for _, history := range histories {
+		var snapshot poker.Snapshot
+		if err := json.Unmarshal(history.Snapshot, &snapshot); err != nil {
+			return fmt.Errorf("decode hand history: %w", err)
+		}
+		views = append(views, handHistoryView{
+			TableID: history.TableID, HandID: history.HandID, GameType: history.GameType,
+			CompletedAt: history.CompletedAt, Table: snapshot,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hands": views})
 	return nil
 }
 

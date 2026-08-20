@@ -14,6 +14,7 @@ const AdminAuthScreen = lazy(() => import("./AdminAuthScreen"));
 const AdminDashboard = lazy(() => import("./AdminDashboard"));
 const ChannelRoom = lazy(() => import("./ChannelRoom"));
 const Dashboard = lazy(() => import("./Dashboard"));
+const HistoryPage = lazy(() => import("./HistoryPage"));
 const SettingsPage = lazy(() => import("./SettingsPage"));
 
 export default function App() {
@@ -59,7 +60,7 @@ export default function App() {
   }, [navigate, route.page, user]);
 
   useEffect(() => {
-    if (!user || (route.page !== "channel" && route.page !== "channel_balances")) return;
+    if (!user || (route.page !== "channel" && route.page !== "channel_balances" && route.page !== "channel_history")) return;
     if (selectedSpace?.id === route.channelID) {
       setRouteLoading(false);
       setRouteError("");
@@ -107,6 +108,7 @@ export default function App() {
           onOpenSettings={() => navigate("/settings")}
           onRegistrationChanged={setRegistrationEnabled}
           onLoginHeroChanged={setLoginHero}
+          onWeChatLoginChanged={setWechatLoginEnabled}
           onLogout={() => { setUser(null); navigate("/admin/login", true); }}
         />
       </Suspense>
@@ -132,7 +134,7 @@ export default function App() {
     return <AccountBindings onBack={() => navigate("/channels")} onOpenSpace={(spaceID) => navigate(`/channels/${spaceID}`)} />;
   }
 
-  if (route.page === "channel" || route.page === "channel_balances") {
+  if (route.page === "channel" || route.page === "channel_balances" || route.page === "channel_history") {
     if (routeError) {
       return (
         <main className="grid min-h-svh place-items-center bg-muted/30 p-6">
@@ -141,6 +143,9 @@ export default function App() {
       );
     }
     if (routeLoading || !selectedSpace || selectedSpace.id !== route.channelID) return <RouteLoading />;
+    if (route.page === "channel_history") {
+      return <Suspense fallback={<RouteLoading />}><HistoryPage user={user} space={selectedSpace} onBack={() => { if (window.history.length > 1) window.history.back(); else navigate(`/channels/${selectedSpace.id}`, true); }} /></Suspense>;
+    }
     if (route.page === "channel_balances") {
       if (!selectedSpace.is_owner && !hasPermission(user, "balances:manage")) {
         return <main className="grid min-h-svh place-items-center bg-muted/30 p-6"><Alert variant="destructive" className="max-w-md"><AlertTitle>无法管理余额</AlertTitle><AlertDescription>你没有该频道的管理权限。</AlertDescription><Button className="mt-4" variant="outline" onClick={() => navigate(`/channels/${selectedSpace.id}`)}>返回频道</Button></Alert></main>;
@@ -156,6 +161,7 @@ export default function App() {
         onNavigateTable={(tableID) => navigate(tableID ? `/channels/${selectedSpace.id}/tables/${tableID}` : `/channels/${selectedSpace.id}`)}
         onOpenBindings={() => navigate("/account/bindings")}
         onOpenBalances={() => navigate(`/channels/${selectedSpace.id}/balances`)}
+        onOpenHistory={() => navigate(`/channels/${selectedSpace.id}/history`)}
       /></Suspense>
     );
   }
@@ -190,6 +196,7 @@ type AppRoute =
   | { page: "admin"; section: AdminSection }
   | { page: "channel"; channelID: string; tableID?: string }
   | { page: "channel_balances"; channelID: string }
+  | { page: "channel_history"; channelID: string }
   | { page: "not_found" };
 
 export function parseRoute(pathname: string): AppRoute {
@@ -211,6 +218,7 @@ export function parseRoute(pathname: string): AppRoute {
   if (parts[0] === "channels" && parts[1]) {
     if (parts.length === 2) return { page: "channel", channelID: parts[1] };
     if (parts.length === 3 && parts[2] === "balances") return { page: "channel_balances", channelID: parts[1] };
+    if (parts.length === 3 && parts[2] === "history") return { page: "channel_history", channelID: parts[1] };
     if (parts.length === 4 && parts[2] === "tables" && parts[3]) return { page: "channel", channelID: parts[1], tableID: parts[3] };
   }
   return { page: "not_found" };

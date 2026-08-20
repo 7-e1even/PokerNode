@@ -1511,6 +1511,180 @@
   }
 }
 
+/* Keep the full betting workflow visible without covering the viewer's hand. */
+@media (max-width: 40rem) and (orientation: portrait) {
+  .table-room-hud {
+    align-items: center;
+    gap: 0.25rem;
+    padding: max(0.25rem, env(safe-area-inset-top)) 0.5rem 0.25rem;
+  }
+
+  .poker-room-hud__primary {
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+  }
+
+  .poker-room-hud__identity,
+  .poker-room-hud__actions {
+    min-height: 2.75rem;
+  }
+
+  .poker-room-hud__identity {
+    padding-right: 0.25rem;
+  }
+
+  .poker-room-hud__status {
+    min-height: 2rem;
+    gap: 0.25rem;
+    padding-inline: 0.25rem;
+  }
+
+  .poker-room-hud__blinds {
+    display: none;
+  }
+
+  .poker-room-hud__actions {
+    gap: 0;
+  }
+
+  .poker-scene .poker-action-region {
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    width: calc(100% - 1rem);
+    gap: 0.375rem;
+  }
+
+  .poker-action-region > [data-slot="card"] {
+    width: 100%;
+    max-width: none;
+  }
+
+  .poker-bet-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.25rem 0.75rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .poker-bet-heading {
+    display: none;
+  }
+
+  .poker-quick-bets {
+    width: 100%;
+    min-width: 0;
+    justify-content: space-between;
+    gap: 0.25rem;
+  }
+
+  .poker-quick-bets > [data-slot="toggle-group-item"] {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 0.5rem;
+  }
+
+  .poker-bet-controls .poker-bet-slider {
+    order: 0;
+    grid-column: 1 / -1;
+  }
+
+  .poker-bet-amount {
+    grid-row: 1;
+    grid-column: 2;
+    min-width: 4.5rem;
+    font-size: 0.875rem;
+  }
+
+  .poker-scene[data-actionable="true"] .poker-seat[data-viewer="true"] {
+    top: calc(var(--poker-seat-y) - 2.25rem);
+  }
+
+  .poker-scene[data-actionable="true"] .poker-seat[data-viewer="true"] .poker-seat-action {
+    display: none;
+  }
+
+  .poker-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.375rem;
+    padding: 0.375rem;
+  }
+
+  .poker-action-buttons > [data-slot="badge"],
+  .poker-action-buttons > [data-slot="button"] {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 28rem) and (orientation: portrait) {
+  .poker-room-hud__brand {
+    display: none;
+  }
+}
+
+@media (min-width: 32rem) and (max-width: 40rem) and (orientation: portrait) {
+  .poker-action-region > [data-slot="card"] {
+    border-radius: 999px;
+  }
+
+  .poker-bet-controls {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .poker-bet-heading {
+    display: flex;
+    width: auto;
+    min-width: 5.5rem;
+    flex: none;
+    padding-inline: 0.25rem;
+  }
+
+  .poker-quick-bets {
+    width: auto;
+    flex: none;
+  }
+
+  .poker-quick-bets > [data-slot="toggle-group-item"] {
+    flex: none;
+  }
+
+  .poker-bet-controls .poker-bet-slider {
+    order: 0;
+    width: auto;
+    min-width: 3rem;
+    flex: 1;
+  }
+
+  .poker-bet-amount {
+    min-width: 4.25rem;
+  }
+
+  .poker-action-buttons {
+    display: flex;
+    flex-wrap: nowrap;
+  }
+
+  .poker-action-buttons > [data-slot="badge"],
+  .poker-action-buttons > [data-slot="button"] {
+    width: auto;
+    flex: 1 1 0;
+    padding-inline: 0.5rem;
+    font-size: clamp(0.6875rem, 2vw, 0.875rem);
+  }
+
+  .poker-action-buttons > [data-slot="badge"] {
+    flex-grow: 1.15;
+  }
+
+  .poker-action-buttons > [data-slot="button"]:last-child {
+    flex-grow: 1.45;
+  }
+}
+
 /* Utilities intentionally win inside Tailwind layers. These extreme landscape
    overrides stay unlayered so the compact side controls can replace them. */
 @media (max-height: 28rem) and (orientation: landscape) {

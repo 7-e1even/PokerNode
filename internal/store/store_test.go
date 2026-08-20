@@ -183,6 +183,50 @@ func TestUserDeletionGuards(t *testing.T) {
 	}
 }
 
+func TestHandHistoryIsStoredOnceAlongsideLatestTableState(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t)
+
+	player, err := database.CreateUser(ctx, "history-player", "History Player", "hash", "player")
+	if err != nil {
+		t.Fatal(err)
+	}
+	space := Space{
+		ID: "history-space", Name: "History Space", InviteCode: "HISTORY1", OwnerUserID: player.ID,
+		BaseURL: "http://example.test", AdminTokenEnc: "encrypted", AdminTokenLast4: "last",
+		AdminNewAPIUserID: 1, AdminNewAPIRole: 100, QuotaPerUSD: 500000, CreatedAt: "2026-08-20T00:00:00Z",
+	}
+	if err := database.CreateSpace(ctx, space); err != nil {
+		t.Fatal(err)
+	}
+	history := HandHistory{
+		HandID: 29, UserID: player.ID, GameType: "texas_holdem",
+		Snapshot: []byte(`{"hand_id":29,"winner":"l4zily"}`), CompletedAt: "2026-08-20T11:52:00Z",
+	}
+	if err := database.SaveTableStateWithHandHistories(ctx, space.ID, "table-1", []byte(`{"hand_id":29}`), []HandHistory{history}); err != nil {
+		t.Fatal(err)
+	}
+	history.Snapshot = []byte(`{"hand_id":29,"winner":"wrong overwrite"}`)
+	if err := database.SaveTableStateWithHandHistories(ctx, space.ID, "table-1", []byte(`{"hand_id":30}`), []HandHistory{history}); err != nil {
+		t.Fatal(err)
+	}
+
+	histories, err := database.HandHistories(ctx, space.ID, player.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(histories) != 1 || string(histories[0].Snapshot) != `{"hand_id":29,"winner":"l4zily"}` {
+		t.Fatalf("completed hand should remain immutable: %#v", histories)
+	}
+	state, err := database.LoadTableState(ctx, space.ID, "table-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(state) != `{"hand_id":30}` {
+		t.Fatalf("latest table state was not updated: %s", state)
+	}
+}
+
 func TestRolesAndMultiChannelManagementScope(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t)

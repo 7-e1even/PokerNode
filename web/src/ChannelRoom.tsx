@@ -37,6 +37,7 @@ interface Props {
   onNavigateTable: (tableID?: string) => void;
   onOpenBindings: () => void;
   onOpenBalances: () => void;
+  onOpenHistory: () => void;
 }
 
 type RoomPlayer = TableSeatSummary & { tableID: string; tableName: string };
@@ -44,7 +45,7 @@ type TableAdminAction = { mode: "clear" | "delete"; table: TableSummary };
 const channelSidebarOpenKey = "pokernode.channel-sidebar.open";
 const channelSidebarWidthKey = "pokernode.channel-sidebar.width";
 
-export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBindings, onOpenBalances }: Props) {
+export default function ChannelRoom({ user, initialSpace, initialTableID, onBack, onNavigateTable, onOpenBindings, onOpenBalances, onOpenHistory }: Props) {
   const [space, setSpace] = useState(initialSpace);
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
@@ -220,6 +221,7 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
         user={user}
         initialSpace={space}
         initialTable={selectedTable}
+        onOpenHistory={onOpenHistory}
         onBack={() => {
           setSelectedTable(null);
           onNavigateTable();
@@ -457,6 +459,7 @@ function TableMapTile({ table, blockedBySeat, onOpen, onManage }: { table: Table
   const stakeLabel = table.game_type === "landlord" ? `底分 ${money(table.base_stake_cents || 0)}` : `${money(table.small_blind_cents || 0)} / ${money(table.big_blind_cents || 0)}`;
   const stateLabel = tableHandActive(table.street) ? "进行中" : table.player_count > 0 ? "等待开局" : "等待玩家";
   const manageable = !!onManage;
+  const canWaitForNext = tableHandActive(table.street) && !table.viewer_seated && table.player_count < table.max_players;
   return (
     <div className="table-map-item group">
       <Tooltip>
@@ -475,11 +478,11 @@ function TableMapTile({ table, blockedBySeat, onOpen, onManage }: { table: Table
             </span>
             <span className="flex w-full items-center justify-between gap-3 border-t pt-3 text-xs font-normal text-muted-foreground">
               <span className="truncate">{playerNames ? `玩家：${playerNames}` : "暂无玩家"}</span>
-              <span className="shrink-0">{table.viewer_seated ? "你在此桌" : blockedBySeat ? "已在其他桌" : "可进入"}</span>
+              <span className="shrink-0">{table.viewer_seated ? "你在此桌" : blockedBySeat ? "已在其他桌" : canWaitForNext ? "可先入座" : "可进入"}</span>
             </span>
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{blockedBySeat ? "请先离开当前牌桌" : playerNames ? `${playerNames} 正在这桌` : "空桌，点击入座"}</TooltipContent>
+        <TooltipContent>{blockedBySeat ? "请先离开当前牌桌" : canWaitForNext ? "牌局进行中，可先入座等待下一手" : playerNames ? `${playerNames} 正在这桌` : "空桌，点击入座"}</TooltipContent>
       </Tooltip>
       {manageable && (
         <Tooltip>

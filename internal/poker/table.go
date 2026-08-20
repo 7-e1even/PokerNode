@@ -66,11 +66,28 @@ type Player struct {
 }
 
 type HandResult struct {
-	HandID   int64           `json:"hand_id"`
-	Pot      int64           `json:"pot_cents"`
-	Message  string          `json:"message"`
-	Showdown bool            `json:"showdown"`
-	Payouts  map[int64]int64 `json:"payouts"`
+	HandID   int64              `json:"hand_id"`
+	Pot      int64              `json:"pot_cents"`
+	Message  string             `json:"message"`
+	Showdown bool               `json:"showdown"`
+	Board    []Card             `json:"board,omitempty"`
+	Payouts  map[int64]int64    `json:"payouts"`
+	Refunds  map[int64]int64    `json:"refunds,omitempty"`
+	Players  []HandPlayerResult `json:"players,omitempty"`
+}
+
+type HandPlayerResult struct {
+	UserID        int64  `json:"user_id"`
+	Name          string `json:"name"`
+	Seat          int    `json:"seat"`
+	Cards         []Card `json:"cards,omitempty"`
+	Folded        bool   `json:"folded"`
+	StartingStack int64  `json:"starting_stack_cents"`
+	Committed     int64  `json:"committed_cents"`
+	Payout        int64  `json:"payout_cents"`
+	Refund        int64  `json:"refund_cents,omitempty"`
+	EndingStack   int64  `json:"ending_stack_cents"`
+	Net           int64  `json:"net_cents"`
 }
 
 type TableState struct {
@@ -223,15 +240,14 @@ func (t *Table) Join(userID int64, name string, buyIn int64) (int, error) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.handActiveLocked() {
-		return -1, ErrHandInProgress
-	}
 	if t.seatForUserLocked(userID) >= 0 {
 		return -1, ErrAlreadySeated
 	}
 	for seat := range t.state.Seats {
 		if t.state.Seats[seat] == nil {
-			t.clearReadyLocked()
+			if !t.handActiveLocked() {
+				t.clearReadyLocked()
+			}
 			t.state.Seats[seat] = &Player{UserID: userID, Name: name, Seat: seat, Stack: buyIn}
 			return seat, nil
 		}
@@ -522,7 +538,7 @@ func (t *Table) Snapshot(viewerID int64) Snapshot {
 		ActionDeadlineAt: t.state.ActionDeadlineAt, TurnID: t.state.TurnID,
 		ViewerSeat: viewerSeat, Players: players,
 		Allowed: t.allowedActionsLocked(viewerID), CanStart: viewerSeat >= 0 && t.state.Seats[viewerSeat].Stack > 0 && !t.handActiveLocked() && len(t.playableSeatsLocked()) >= 2,
-		CanLeave: viewerSeat >= 0 && !t.handActiveLocked(), LastResult: cloneResult(t.state.LastResult),
+		CanLeave: viewerSeat >= 0 && !t.handActiveLocked(), LastResult: cloneResult(t.state.LastResult, viewerID),
 	}
 }
 
@@ -547,6 +563,9 @@ func (t *Table) raiseToLocked(seat int, target int64) error {
 	maximum := player.Bet + player.Stack
 	if target <= t.state.CurrentBet || target > maximum {
 		return errors.New("raise amount is outside the allowed range")
+	}
+	if target > t.maxRaiseToLocked(seat) {
+		return errors.New("raise amount exceeds what an opponent can match")
 	}
 	if !t.raiseReopenedLocked(seat) {
 		return errors.New("betting was not reopened by the incomplete all-in raise")
@@ -656,18 +675,24 @@ func (t *Table) blindSeatsLocked() (int, int) {
 }
 
 func (t *Table) finishUncontestedLocked() {
+	refunds := t.refundUncalledBetLocked()
 	pot := t.potLocked()
+	payouts := make(map[int64]int64)
+	message := "Hand complete"
 	for _, player := range t.state.Seats {
 		if player != nil && player.InHand && !player.Folded {
 			player.Stack += pot
-			t.state.LastResult = &HandResult{HandID: t.state.HandID, Pot: pot, Message: player.Name + " wins", Payouts: map[int64]int64{player.UserID: pot}}
+			payouts[player.UserID] = pot
+			message = player.Name + " wins"
 			break
 		}
 	}
+	t.state.LastResult = t.handResultLocked(pot, message, false, payouts, refunds)
 	t.finishHandLocked()
 }
 
 func (t *Table) finishShowdownLocked() {
+	refunds := t.refundUncalledBetLocked()
 	pot := t.potLocked()
 	payouts := t.awardSidePotsLocked()
 	winnerNames := make([]string, 0, len(payouts))
@@ -685,8 +710,59 @@ func (t *Table) finishShowdownLocked() {
 	if len(winnerNames) > 0 {
 		message = fmt.Sprintf("%s win at showdown", joinNames(winnerNames))
 	}
-	t.state.LastResult = &HandResult{HandID: t.state.HandID, Pot: pot, Message: message, Showdown: true, Payouts: payouts}
+	t.state.LastResult = t.handResultLocked(pot, message, true, payouts, refunds)
 	t.finishHandLocked()
+}
+
+func (t *Table) refundUncalledBetLocked() map[int64]int64 {
+	highest := int64(0)
+	second := int64(0)
+	highestSeat := -1
+	for seat, player := range t.state.Seats {
+		if player == nil || player.Committed <= 0 {
+			continue
+		}
+		switch {
+		case player.Committed > highest:
+			second = highest
+			highest = player.Committed
+			highestSeat = seat
+		case player.Committed == highest:
+			second = highest
+			highestSeat = -1
+		case player.Committed > second:
+			second = player.Committed
+		}
+	}
+	if highestSeat < 0 || highest <= second {
+		return nil
+	}
+	player := t.state.Seats[highestSeat]
+	amount := highest - second
+	player.Committed -= amount
+	player.Bet -= min(player.Bet, amount)
+	player.Stack += amount
+	return map[int64]int64{player.UserID: amount}
+}
+
+func (t *Table) handResultLocked(pot int64, message string, showdown bool, payouts, refunds map[int64]int64) *HandResult {
+	players := make([]HandPlayerResult, 0, MaxSeats)
+	for seat, player := range t.state.Seats {
+		if player == nil || !player.InHand {
+			continue
+		}
+		payout := payouts[player.UserID]
+		startingStack := player.Stack + player.Committed - payout
+		players = append(players, HandPlayerResult{
+			UserID: player.UserID, Name: player.Name, Seat: seat, Cards: append([]Card(nil), player.Hole...),
+			Folded: player.Folded, StartingStack: startingStack, Committed: player.Committed,
+			Payout: payout, Refund: refunds[player.UserID], EndingStack: player.Stack, Net: player.Stack - startingStack,
+		})
+	}
+	return &HandResult{
+		HandID: t.state.HandID, Pot: pot, Message: message, Showdown: showdown,
+		Board: append([]Card(nil), t.state.Board...), Payouts: payouts, Refunds: refunds, Players: players,
+	}
 }
 
 func (t *Table) awardSidePotsLocked() map[int64]int64 {
@@ -792,19 +868,35 @@ func (t *Table) allowedActionsLocked(userID int64) AllowedActions {
 	player := t.state.Seats[seat]
 	toCall := max(0, t.state.CurrentBet-player.Bet)
 	maximum := player.Bet + player.Stack
+	maxRaiseTo := t.maxRaiseToLocked(seat)
 	minimum := t.state.CurrentBet + t.state.MinRaise
 	if t.state.CurrentBet == 0 {
 		minimum = t.state.BigBlind
 	}
-	minimum = min(minimum, maximum)
+	minimum = min(minimum, maxRaiseTo)
 	raiseReopened := t.raiseReopenedLocked(seat)
+	canBet := t.state.CurrentBet == 0 && maxRaiseTo > 0 && (maxRaiseTo >= t.state.BigBlind || maxRaiseTo == maximum)
+	canRaise := t.state.CurrentBet > 0 && maxRaiseTo > t.state.CurrentBet && raiseReopened && (maxRaiseTo-t.state.CurrentBet >= t.state.MinRaise || maxRaiseTo == maximum)
 	return AllowedActions{
 		CanAct: true, CanFold: true, CanCheck: toCall == 0, CanCall: toCall > 0,
-		CanBet:   t.state.CurrentBet == 0 && player.Stack > 0,
-		CanRaise: t.state.CurrentBet > 0 && maximum > t.state.CurrentBet && raiseReopened,
-		CanAllIn: player.Stack > 0 && (maximum <= t.state.CurrentBet || raiseReopened), ToCall: min(toCall, player.Stack),
-		MinRaiseTo: minimum, MaxRaiseTo: maximum,
+		CanBet:   canBet,
+		CanRaise: canRaise,
+		CanAllIn: player.Stack > 0 && (maximum <= t.state.CurrentBet || (maximum <= maxRaiseTo && raiseReopened)), ToCall: min(toCall, player.Stack),
+		MinRaiseTo: minimum, MaxRaiseTo: maxRaiseTo,
 	}
+}
+
+func (t *Table) maxRaiseToLocked(seat int) int64 {
+	player := t.state.Seats[seat]
+	maximum := player.Bet + player.Stack
+	opponentMaximum := int64(0)
+	for otherSeat, opponent := range t.state.Seats {
+		if otherSeat == seat || opponent == nil || !opponent.InHand || opponent.Folded {
+			continue
+		}
+		opponentMaximum = max(opponentMaximum, opponent.Bet+opponent.Stack)
+	}
+	return min(maximum, opponentMaximum)
 }
 
 func (t *Table) raiseReopenedLocked(seat int) bool {
@@ -942,14 +1034,28 @@ func (t *Table) dealNextBoardLocked() {
 	t.drawBoardLocked(count)
 }
 
-func cloneResult(result *HandResult) *HandResult {
+func cloneResult(result *HandResult, viewerID int64) *HandResult {
 	if result == nil {
 		return nil
 	}
 	clone := *result
+	clone.Board = append([]Card(nil), result.Board...)
 	clone.Payouts = make(map[int64]int64, len(result.Payouts))
 	for userID, amount := range result.Payouts {
 		clone.Payouts[userID] = amount
+	}
+	clone.Refunds = make(map[int64]int64, len(result.Refunds))
+	for userID, amount := range result.Refunds {
+		clone.Refunds[userID] = amount
+	}
+	clone.Players = make([]HandPlayerResult, len(result.Players))
+	for index, player := range result.Players {
+		clone.Players[index] = player
+		if player.UserID == viewerID || (result.Showdown && !player.Folded) {
+			clone.Players[index].Cards = append([]Card(nil), player.Cards...)
+		} else {
+			clone.Players[index].Cards = nil
+		}
 	}
 	return &clone
 }

@@ -8,6 +8,7 @@ import (
 
 	"pokernode/internal/landlord"
 	"pokernode/internal/poker"
+	"pokernode/internal/store"
 )
 
 const (
@@ -185,6 +186,33 @@ func (runtime *tableRuntime) marshalState() ([]byte, error) {
 		return runtime.landlord.MarshalState()
 	}
 	return runtime.table.MarshalState()
+}
+
+func (runtime *tableRuntime) completedHandHistories() ([]store.HandHistory, error) {
+	if runtime.table == nil {
+		return nil, nil
+	}
+	snapshot := runtime.table.Snapshot(0)
+	if snapshot.LastResult == nil || snapshot.LastResult.HandID == 0 || len(snapshot.LastResult.Players) == 0 {
+		return nil, nil
+	}
+	histories := make([]store.HandHistory, 0, len(snapshot.LastResult.Players))
+	seen := make(map[int64]bool, len(snapshot.LastResult.Players))
+	for _, participant := range snapshot.LastResult.Players {
+		if participant.UserID <= 0 || seen[participant.UserID] {
+			continue
+		}
+		seen[participant.UserID] = true
+		data, err := json.Marshal(runtime.table.Snapshot(participant.UserID))
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, store.HandHistory{
+			HandID: snapshot.LastResult.HandID, UserID: participant.UserID,
+			GameType: gameTypeTexasHoldem, Snapshot: data,
+		})
+	}
+	return histories, nil
 }
 
 func tableGameAPIError(err error) error {

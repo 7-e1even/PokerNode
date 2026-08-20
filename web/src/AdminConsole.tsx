@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { LoginHeroImage } from "@/components/login-hero-image";
 import { SectionCards } from "@/components/section-cards";
+import { WeChatLoginSettings } from "@/components/wechat-login-settings";
 import type { AdminSection } from "@/components/app-sidebar";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -29,13 +30,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api, patch, post, put, remove, upload } from "./api";
 import BalanceManager from "./BalanceManager";
 import RoleManager from "./RoleManager";
-import { DEFAULT_LOGIN_HERO_CONFIG, type AdminOverview, type AdminSpaceSummary, type LoginHeroConfig, type Role, type User, type UserRole, type UserStatus } from "./types";
+import { DEFAULT_LOGIN_HERO_CONFIG, DEFAULT_WECHAT_LOGIN_CONFIG, type AdminOverview, type AdminSpaceSummary, type LoginHeroConfig, type Role, type User, type UserRole, type UserStatus } from "./types";
 
 interface Props {
   currentUser: User;
   section: AdminSection;
   onRegistrationChanged: (enabled: boolean) => void;
   onLoginHeroChanged: (config: LoginHeroConfig) => void;
+  onWeChatLoginChanged: (enabled: boolean) => void;
 }
 
 function normalizeAdminOverview(result: AdminOverview): AdminOverview {
@@ -61,10 +63,11 @@ function normalizeAdminOverview(result: AdminOverview): AdminOverview {
       : [],
     permission_catalog: Array.isArray(result.permission_catalog) ? result.permission_catalog : [],
     login_hero: { ...DEFAULT_LOGIN_HERO_CONFIG, ...(result.login_hero || {}) },
+    wechat_login: { ...DEFAULT_WECHAT_LOGIN_CONFIG, ...(result.wechat_login || {}) },
   };
 }
 
-export default function AdminConsole({ currentUser, section, onRegistrationChanged, onLoginHeroChanged }: Props) {
+export default function AdminConsole({ currentUser, section, onRegistrationChanged, onLoginHeroChanged, onWeChatLoginChanged }: Props) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -89,6 +92,7 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
       setLoginHeroDraft(normalized.login_hero);
       onRegistrationChanged(normalized.registration_enabled);
       onLoginHeroChanged(normalized.login_hero);
+      onWeChatLoginChanged(normalized.wechat_login.enabled);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取运营数据失败");
     } finally {
@@ -316,6 +320,10 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
             </FieldGroup>
           </CardContent>
         </Card>
+        <WeChatLoginSettings settings={overview.wechat_login} canManage={canManageLoginHero} onChanged={(settings) => {
+          setOverview((current) => current ? { ...current, wechat_login: settings } : current);
+          onWeChatLoginChanged(settings.enabled);
+        }} />
         <Card>
           <CardHeader><CardTitle>注册策略</CardTitle><CardDescription>控制玩家登录页是否允许访客自行创建 PokerNode 账号。</CardDescription><CardAction><Badge variant={overview.registration_enabled ? "secondary" : "outline"}>{overview.registration_enabled ? "开放" : "已关闭"}</Badge></CardAction></CardHeader>
           <CardContent>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -43,6 +44,22 @@ type adminLoginHeroPlacementInput struct {
 	Zoom      float64 `json:"zoom"`
 }
 
+type adminWeChatSettingsInput struct {
+	AppID       string `json:"app_id"`
+	AppSecret   string `json:"app_secret"`
+	RedirectURI string `json:"redirect_uri"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type adminWeChatSettingsView struct {
+	AppID               string `json:"app_id"`
+	RedirectURI         string `json:"redirect_uri"`
+	Enabled             bool   `json:"enabled"`
+	Configured          bool   `json:"configured"`
+	AppSecretConfigured bool   `json:"app_secret_configured"`
+	Source              string `json:"source"`
+}
+
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, actor store.User) error {
 	permissions, err := s.permissionsForUser(r.Context(), actor)
 	if err != nil {
@@ -69,6 +86,10 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		return err
 	}
 	loginHeroConfig, err := s.store.LoginHeroImageConfig(r.Context())
+	if err != nil {
+		return err
+	}
+	wechatSettings, err := s.adminWeChatSettings(r.Context())
 	if err != nil {
 		return err
 	}
@@ -104,6 +125,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		"platform_counts":      platformCounts,
 		"registration_enabled": registrationEnabled,
 		"login_hero":           loginHeroImagePayload(loginHeroConfig),
+		"wechat_login":         wechatSettings,
 		"permissions":          permissions,
 		"roles":                roles,
 		"permission_catalog":   access.Catalog(),
@@ -482,6 +504,79 @@ func (s *Server) handleAdminRegistration(w http.ResponseWriter, r *http.Request,
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"registration_enabled": input.Enabled})
+	return nil
+}
+
+func (s *Server) adminWeChatSettings(ctx context.Context) (adminWeChatSettingsView, error) {
+	settings, err := s.store.WeChatSettings(ctx)
+	if err == nil {
+		secretConfigured := settings.AppSecretEnc != ""
+		return adminWeChatSettingsView{
+			AppID: settings.AppID, RedirectURI: settings.RedirectURI, Enabled: settings.Enabled,
+			Configured:          settings.AppID != "" && settings.RedirectURI != "" && secretConfigured,
+			AppSecretConfigured: secretConfigured, Source: "database",
+		}, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return adminWeChatSettingsView{}, err
+	}
+	wechatAuth := s.currentWeChat()
+	if wechatAuth == nil {
+		return adminWeChatSettingsView{Source: "none"}, nil
+	}
+	return adminWeChatSettingsView{
+		AppID: wechatAuth.appID, RedirectURI: wechatAuth.redirectURL, Enabled: true,
+		Configured:          wechatAuth.appID != "" && wechatAuth.redirectURL != "" && wechatAuth.secretConfigured,
+		AppSecretConfigured: wechatAuth.secretConfigured, Source: wechatAuth.source,
+	}, nil
+}
+
+func (s *Server) handleAdminWeChatSettings(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	if actor.Role != string(access.RoleSuperAdmin) {
+		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改微信登录配置"}
+	}
+	var input adminWeChatSettingsInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.AppID = strings.TrimSpace(input.AppID)
+	input.AppSecret = strings.TrimSpace(input.AppSecret)
+	input.RedirectURI = strings.TrimSpace(input.RedirectURI)
+	if len(input.AppID) > 128 || len(input.AppSecret) > 256 || len(input.RedirectURI) > 2048 {
+		return &apiError{Status: http.StatusBadRequest, Message: "微信登录配置长度无效"}
+	}
+	if input.RedirectURI != "" {
+		redirectURL, err := url.Parse(input.RedirectURI)
+		if err != nil || (redirectURL.Scheme != "http" && redirectURL.Scheme != "https") || redirectURL.Host == "" || redirectURL.User != nil || redirectURL.Fragment != "" || redirectURL.RawQuery != "" || redirectURL.Path != "/api/auth/wechat/callback" {
+			return &apiError{Status: http.StatusBadRequest, Message: "回调地址必须是以 /api/auth/wechat/callback 结尾的完整 HTTP(S) 地址"}
+		}
+	}
+	existing, err := s.store.WeChatSettings(r.Context())
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	secretEnc := existing.AppSecretEnc
+	if input.AppSecret != "" {
+		secretEnc, err = s.cipher.Encrypt(input.AppSecret)
+		if err != nil {
+			return err
+		}
+	}
+	if input.Enabled && (input.AppID == "" || input.RedirectURI == "" || secretEnc == "") {
+		return &apiError{Status: http.StatusBadRequest, Message: "启用微信登录前请填写 AppID、AppSecret 和回调地址"}
+	}
+	settings := store.WeChatSettings{AppID: input.AppID, AppSecretEnc: secretEnc, RedirectURI: input.RedirectURI, Enabled: input.Enabled}
+	if err := s.store.SetWeChatSettings(r.Context(), settings); err != nil {
+		return err
+	}
+	if err := s.reloadStoredWeChat(r.Context()); err != nil {
+		return err
+	}
+	view, err := s.adminWeChatSettings(r.Context())
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"wechat_login": view})
 	return nil
 }
 

@@ -52,7 +52,7 @@ func main() {
 	wechatAppSecret := os.Getenv("WECHAT_APP_SECRET")
 	wechatRedirectURI := os.Getenv("WECHAT_REDIRECT_URI")
 	if wechatAppID != "" && wechatAppSecret != "" && wechatRedirectURI != "" {
-		serverOptions = append(serverOptions, app.WithWeChat(wechatRedirectURI, wechat.NewClient(wechatAppID, wechatAppSecret, nil)))
+		serverOptions = append(serverOptions, app.WithWeChatCredentials(wechatAppID, wechatRedirectURI, wechat.NewClient(wechatAppID, wechatAppSecret, nil)))
 	} else if wechatAppID != "" || wechatAppSecret != "" || wechatRedirectURI != "" {
 		logger.Warn("wechat login is disabled because its configuration is incomplete")
 	}

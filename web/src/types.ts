@@ -50,6 +50,24 @@ export const DEFAULT_LOGIN_HERO_CONFIG: LoginHeroConfig = {
   zoom: 1,
 };
 
+export interface WeChatLoginConfig {
+  app_id: string;
+  redirect_uri: string;
+  enabled: boolean;
+  configured: boolean;
+  app_secret_configured: boolean;
+  source: "database" | "environment" | "none";
+}
+
+export const DEFAULT_WECHAT_LOGIN_CONFIG: WeChatLoginConfig = {
+  app_id: "",
+  redirect_uri: "",
+  enabled: false,
+  configured: false,
+  app_secret_configured: false,
+  source: "none",
+};
+
 export interface AdminOverview {
   users: User[];
   counts: Record<string, number>;
@@ -57,6 +75,7 @@ export interface AdminOverview {
   platform_counts: AdminPlatformCounts;
   registration_enabled: boolean;
   login_hero: LoginHeroConfig;
+  wechat_login: WeChatLoginConfig;
   permissions: string[];
   roles: Role[];
   permission_catalog: PermissionDefinition[];
@@ -153,6 +172,31 @@ export interface AllowedActions {
   max_raise_to_cents: number;
 }
 
+export interface HandResultPlayer {
+  user_id: number;
+  name: string;
+  seat: number;
+  cards?: Card[];
+  folded: boolean;
+  starting_stack_cents: number;
+  committed_cents: number;
+  payout_cents: number;
+  refund_cents?: number;
+  ending_stack_cents: number;
+  net_cents: number;
+}
+
+export interface HandResult {
+  hand_id?: number;
+  message: string;
+  pot_cents: number;
+  showdown?: boolean;
+  board?: Card[];
+  payouts?: Record<string, number>;
+  refunds?: Record<string, number>;
+  players?: HandResultPlayer[];
+}
+
 export interface TableState {
   game_type: "texas_holdem";
   id: string;
@@ -177,13 +221,7 @@ export interface TableState {
   allowed_actions: AllowedActions;
   can_start: boolean;
   can_leave: boolean;
-  last_result?: {
-    hand_id?: number;
-    message: string;
-    pot_cents: number;
-    showdown?: boolean;
-    payouts?: Record<string, number>;
-  };
+  last_result?: HandResult;
 }
 
 export interface LandlordPlayer {
@@ -311,6 +349,14 @@ export interface WalletOperation {
   status: string;
   error?: string;
   created_at: string;
+}
+
+export interface HandHistory {
+  table_id: string;
+  hand_id: number;
+  game_type: "texas_holdem";
+  completed_at: string;
+  table: TableState;
 }
 
 export interface ChannelLeaderboardEntry {

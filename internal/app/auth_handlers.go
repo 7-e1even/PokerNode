@@ -39,8 +39,11 @@ type wechatProvider interface {
 }
 
 type wechatAuth struct {
-	redirectURL string
-	provider    wechatProvider
+	appID            string
+	redirectURL      string
+	provider         wechatProvider
+	secretConfigured bool
+	source           string
 }
 
 type authInput struct {
@@ -109,9 +112,48 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"registration_enabled": enabled,
-		"wechat_login_enabled": s.wechat != nil,
+		"wechat_login_enabled": s.currentWeChat() != nil,
 		"login_hero":           loginHeroImagePayload(loginHeroConfig),
 	})
+}
+
+func (s *Server) currentWeChat() *wechatAuth {
+	s.wechatMu.RLock()
+	defer s.wechatMu.RUnlock()
+	return s.wechat
+}
+
+func (s *Server) setWeChat(auth *wechatAuth) {
+	s.wechatMu.Lock()
+	s.wechat = auth
+	s.wechatMu.Unlock()
+}
+
+func (s *Server) reloadStoredWeChat(ctx context.Context) error {
+	settings, err := s.store.WeChatSettings(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.setWeChat(nil)
+	if !settings.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(settings.AppID) == "" || strings.TrimSpace(settings.RedirectURI) == "" || settings.AppSecretEnc == "" {
+		return errors.New("stored wechat configuration is incomplete")
+	}
+	secret, err := s.cipher.Decrypt(settings.AppSecretEnc)
+	if err != nil {
+		return fmt.Errorf("decrypt stored wechat app secret: %w", err)
+	}
+	s.setWeChat(&wechatAuth{
+		appID: settings.AppID, redirectURL: settings.RedirectURI,
+		provider:         wechat.NewClient(settings.AppID, secret, nil),
+		secretConfigured: true, source: "database",
+	})
+	return nil
 }
 
 func (s *Server) handleLoginHeroImage(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +202,8 @@ func (s *Server) handleWeChatLink(w http.ResponseWriter, r *http.Request, _ stor
 }
 
 func (s *Server) beginWeChatAuth(w http.ResponseWriter, r *http.Request, flow string) error {
-	if s.wechat == nil {
+	wechatAuth := s.currentWeChat()
+	if wechatAuth == nil {
 		return errors.New("wechat login is not configured")
 	}
 	random := make([]byte, 32)
@@ -170,7 +213,7 @@ func (s *Server) beginWeChatAuth(w http.ResponseWriter, r *http.Request, flow st
 	state := base64.RawURLEncoding.EncodeToString(random)
 	s.setWeChatCookie(w, r, wechatStateCookie, state, 10*time.Minute)
 	s.setWeChatCookie(w, r, wechatFlowCookie, flow, 10*time.Minute)
-	http.Redirect(w, r, s.wechat.provider.AuthorizeURL(s.wechat.redirectURL, state), http.StatusFound)
+	http.Redirect(w, r, wechatAuth.provider.AuthorizeURL(wechatAuth.redirectURL, state), http.StatusFound)
 	return nil
 }
 
@@ -188,7 +231,8 @@ func (s *Server) handleWeChatCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearWeChatCookies(w, r)
-	if s.wechat == nil {
+	wechatAuth := s.currentWeChat()
+	if wechatAuth == nil {
 		s.redirectWeChatResult(w, r, flow, "unavailable")
 		return
 	}
@@ -197,7 +241,7 @@ func (s *Server) handleWeChatCallback(w http.ResponseWriter, r *http.Request) {
 		s.redirectWeChatResult(w, r, flow, "cancelled")
 		return
 	}
-	profile, err := s.wechat.provider.Authenticate(r.Context(), code)
+	profile, err := wechatAuth.provider.Authenticate(r.Context(), code)
 	if err != nil || profile.Subject() == "" {
 		s.logger.Error("complete wechat authorization", "error", err)
 		s.redirectWeChatResult(w, r, flow, "provider_failed")

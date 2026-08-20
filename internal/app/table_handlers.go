@@ -904,7 +904,11 @@ func (s *Server) persistRuntime(ctx context.Context, spaceID, tableID string, ru
 	if err != nil {
 		return err
 	}
-	return s.store.SaveTableState(ctx, spaceID, tableID, data)
+	histories, err := runtime.completedHandHistories()
+	if err != nil {
+		return err
+	}
+	return s.store.SaveTableStateWithHandHistories(ctx, spaceID, tableID, data, histories)
 }
 
 func (s *Server) broadcast(spaceID, tableID string, runtime *tableRuntime) {

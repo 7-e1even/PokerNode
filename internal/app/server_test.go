@@ -413,6 +413,21 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	var handHistory struct {
+		Hands []struct {
+			TableID string         `json:"table_id"`
+			HandID  int64          `json:"hand_id"`
+			Table   poker.Snapshot `json:"table"`
+		} `json:"hands"`
+	}
+	requestJSON(t, alice, http.MethodGet, spacePath+"/hands", nil, http.StatusOK, &handHistory)
+	if len(handHistory.Hands) != 1 || handHistory.Hands[0].TableID != mainTableID || handHistory.Hands[0].HandID != 1 || handHistory.Hands[0].Table.LastResult == nil || len(handHistory.Hands[0].Table.LastResult.Players) != 2 {
+		t.Fatalf("completed hand history was not returned to Alice: %#v", handHistory.Hands)
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/hands", nil, http.StatusOK, &handHistory)
+	if len(handHistory.Hands) != 1 || handHistory.Hands[0].Table.LastResult == nil {
+		t.Fatalf("completed hand history was not returned to Bob: %#v", handHistory.Hands)
+	}
 	requestJSON(t, alice, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusOK, nil)
 
@@ -1214,6 +1229,116 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 
 	requestJSON(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/registration", map[string]bool{"enabled": false}, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "blocked", "display_name": "Blocked", "password": "password-4"}, http.StatusForbidden, nil)
+}
+
+func TestSuperAdminConfiguresWeChatLogin(t *testing.T) {
+	database := openTestDatabase(t)
+	cipher, err := secure.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{15}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := auth.NewSessions("test-session-secret-that-is-long-enough", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	appServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer appServer.Close()
+
+	admin := newTestClient(t)
+	player := newTestClient(t)
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "wechat_admin", "display_name": "Admin", "password": "password-1"}, http.StatusCreated, nil)
+	requestJSON(t, player, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "wechat_player", "display_name": "Player", "password": "password-2"}, http.StatusCreated, nil)
+
+	var publicConfig struct {
+		WeChatLoginEnabled bool `json:"wechat_login_enabled"`
+	}
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.WeChatLoginEnabled {
+		t.Fatal("wechat login should start disabled")
+	}
+
+	settingsPath := appServer.URL + "/api/admin/settings/wechat"
+	validSettings := map[string]any{
+		"app_id": "wx-test-app-id", "app_secret": "test-wechat-secret",
+		"redirect_uri": "https://poker.example/api/auth/wechat/callback", "enabled": true,
+	}
+	requestJSON(t, player, http.MethodPut, settingsPath, validSettings, http.StatusForbidden, nil)
+	requestJSON(t, admin, http.MethodPut, settingsPath, map[string]any{
+		"app_id": "wx-test-app-id", "app_secret": "", "redirect_uri": "https://poker.example/api/auth/wechat/callback", "enabled": true,
+	}, http.StatusBadRequest, nil)
+	requestJSON(t, admin, http.MethodPut, settingsPath, map[string]any{
+		"app_id": "wx-test-app-id", "app_secret": "test-wechat-secret", "redirect_uri": "https://poker.example/wrong-callback", "enabled": true,
+	}, http.StatusBadRequest, nil)
+
+	var saved map[string]any
+	requestJSON(t, admin, http.MethodPut, settingsPath, validSettings, http.StatusOK, &saved)
+	encodedSaved, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedSaved), "test-wechat-secret") {
+		t.Fatal("wechat app secret leaked in the admin response")
+	}
+	stored, err := database.WeChatSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AppSecretEnc == "test-wechat-secret" {
+		t.Fatal("wechat app secret was stored as plaintext")
+	}
+	decrypted, err := cipher.Decrypt(stored.AppSecretEnc)
+	if err != nil || decrypted != "test-wechat-secret" {
+		t.Fatalf("stored wechat app secret could not be decrypted: %v", err)
+	}
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if !publicConfig.WeChatLoginEnabled {
+		t.Fatal("wechat login did not become active without a restart")
+	}
+
+	noRedirect := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	startResponse, err := noRedirect.Get(appServer.URL + "/api/auth/wechat/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	startResponse.Body.Close()
+	if startResponse.StatusCode != http.StatusFound {
+		t.Fatalf("wechat start returned %d", startResponse.StatusCode)
+	}
+	authorizeURL, err := url.Parse(startResponse.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorizeURL.Query().Get("appid") != "wx-test-app-id" || authorizeURL.Query().Get("redirect_uri") != "https://poker.example/api/auth/wechat/callback" {
+		t.Fatalf("unexpected wechat authorize URL: %s", authorizeURL)
+	}
+
+	reloadedServer := httptest.NewServer(NewServer(database, cipher, sessions, logger).Handler(filepath.Join(t.TempDir(), "missing-web")))
+	defer reloadedServer.Close()
+	requestJSON(t, newTestClient(t), http.MethodGet, reloadedServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if !publicConfig.WeChatLoginEnabled {
+		t.Fatal("stored wechat settings were not loaded after restart")
+	}
+
+	requestJSON(t, admin, http.MethodPut, settingsPath, map[string]any{
+		"app_id": "wx-test-app-id-2", "app_secret": "", "redirect_uri": "https://poker.example/api/auth/wechat/callback", "enabled": true,
+	}, http.StatusOK, nil)
+	stored, err = database.WeChatSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err = cipher.Decrypt(stored.AppSecretEnc)
+	if err != nil || decrypted != "test-wechat-secret" {
+		t.Fatalf("blank secret did not preserve the existing encrypted secret: %v", err)
+	}
+
+	requestJSON(t, admin, http.MethodPut, settingsPath, map[string]any{
+		"app_id": "wx-test-app-id-2", "app_secret": "", "redirect_uri": "https://poker.example/api/auth/wechat/callback", "enabled": false,
+	}, http.StatusOK, nil)
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.WeChatLoginEnabled {
+		t.Fatal("wechat login remained active after being disabled")
+	}
 }
 
 func TestSuperAdminForceDeleteUserAndNewAPIAccount(t *testing.T) {

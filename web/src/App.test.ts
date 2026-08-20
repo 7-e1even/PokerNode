@@ -14,6 +14,13 @@ describe("parseRoute", () => {
     expect(parseRoute("/settings")).toEqual({ page: "settings" });
   });
 
+  it("parses a channel history URL", () => {
+    expect(parseRoute("/channels/channel-1/history")).toEqual({
+      page: "channel_history",
+      channelID: "channel-1",
+    });
+  });
+
   it("rejects malformed URI encoding without throwing", () => {
     expect(parseRoute("/channels/%E0%A4%A")).toEqual({ page: "not_found" });
   });

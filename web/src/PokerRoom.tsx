@@ -15,29 +15,25 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/utils";
 import { createSnapshotGate, type SnapshotGate } from "@/lib/snapshot-gate";
 import { api, post, put } from "./api";
-import type { Balance, Card as PokerCard, KickVote, Membership, Player, Space, TableEnvelope, TableState, TableSummary, User, WalletOperation } from "./types";
+import type { Balance, Card as PokerCard, KickVote, Membership, Player, Space, TableEnvelope, TableState, TableSummary, User } from "./types";
 
 interface Props {
   user: User;
   initialSpace: Space;
   initialTable: TableSummary;
   onBack: () => void;
+  onOpenHistory: () => void;
 }
 
 interface ChipFlight {
@@ -57,7 +53,7 @@ interface PlayerLayout {
 
 const tableSeatCount = 8;
 
-export default function PokerRoom({ user, initialSpace, initialTable, onBack }: Props) {
+export default function PokerRoom({ user, initialSpace, initialTable, onBack, onOpenHistory }: Props) {
   const [space, setSpace] = useState(initialSpace);
   const [membership, setMembership] = useState<Membership | null>(null);
   const [table, setTable] = useState<TableState | null>(null);
@@ -65,7 +61,6 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   const [balance, setBalance] = useState<Balance | null>(null);
   const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "offline">("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const onBackRef = useRef(onBack);
   const snapshotGate = useRef(createSnapshotGate()).current;
@@ -216,7 +211,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
           <div className="poker-room-hud__primary pointer-events-none flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <div className="table-room-hud__identity poker-room-hud__identity pointer-events-auto flex min-w-0 items-center p-1 pr-3">
               <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
-              <BrandMark className="size-7 shrink-0" aria-hidden="true" />
+              <BrandMark className="poker-room-hud__brand size-7 shrink-0" aria-hidden="true" />
               <div className="min-w-0 pl-1">
                 <h1 className="truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
                 <span className="hidden truncate text-xs text-muted-foreground md:block">
@@ -229,8 +224,8 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
               <div className="table-room-hud__status poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap px-2 py-1" aria-live="polite">
                 <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
                 <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
-                <Separator orientation="vertical" className="h-4" />
-                <span className="text-xs text-muted-foreground">
+                <Separator orientation="vertical" className="poker-room-hud__blinds h-4" />
+                <span className="poker-room-hud__blinds text-xs text-muted-foreground">
                   {table.last_result
                     ? `${resultMessage(table.last_result.message)} · ${money(table.last_result.pot_cents)}`
                     : `盲注 ${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}`}
@@ -267,7 +262,7 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
               <DropdownMenuContent align="end" className="w-44">
                 <DropdownMenuGroup>
                   <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />牌桌规则</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setHistoryOpen(true)}><History />资金记录</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={onOpenHistory}><History />牌局记录</DropdownMenuItem>
                   {space.can_manage && <DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 />频道设置</DropdownMenuItem>}
                 </DropdownMenuGroup>
               </DropdownMenuContent>
@@ -307,7 +302,6 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
       </section>
 
       <SettingsDialog open={settingsOpen} space={space} onClose={() => setSettingsOpen(false)} onSaved={setSpace} />
-      <HistorySheet open={historyOpen} space={space} onClose={() => setHistoryOpen(false)} />
       <RulesDialog open={rulesOpen} table={table} onClose={() => setRulesOpen(false)} />
     </main>
   );
@@ -342,6 +336,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
   const viewerPlayer = table.players.find((player) => player.user_id === user.id);
   const fundedPlayers = table.players.filter((player) => player.stack_cents > 0);
   const readyPlayers = fundedPlayers.filter((player) => player.ready);
+  const joiningDuringHand = table.street === "preflop" || table.street === "flop" || table.street === "turn" || table.street === "river";
   const allowed = table.allowed_actions;
   const actingPlayer = table.players.find((player) => player.seat === table.acting_seat);
   const resultHandID = table.last_result ? (table.last_result.hand_id ?? table.hand_id) : null;
@@ -507,10 +502,10 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
 
       {!seated && (
         <ActionCard className="w-[min(34rem,calc(100%-2rem))]">
-          <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">坐下买入</span><strong>{money(buyIn)}</strong></div>
+          <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">{joiningDuringHand ? "先入座，下一手参与" : "坐下买入"}</span><strong>{money(buyIn)}</strong></div>
           <Slider aria-label="买入金额" min={2000} max={100000} step={500} value={[buyIn]} onValueChange={(value) => setBuyIn(value[0])} />
           <Button className="rounded-full" size="lg" disabled={busy} onClick={() => void run("join", { buy_in_cents: buyIn }, true)}>
-            {busy && <Spinner data-icon="inline-start" />}{busy ? "处理中…" : "加入牌桌"}
+            {busy && <Spinner data-icon="inline-start" />}{busy ? "处理中…" : joiningDuringHand ? "入座并等待下一手" : "加入牌桌"}
           </Button>
         </ActionCard>
       )}
@@ -658,6 +653,7 @@ function Seat({ layout, isViewer, avatarURL, table, isWinner, showWinnerCrown, c
       className={cn("poker-seat absolute z-10 -translate-x-1/2 -translate-y-1/2", player.folded && "opacity-45")}
       data-seat={player.seat}
       data-visual-index={layout.index}
+      data-viewer={isViewer ? "true" : undefined}
       data-horizontal-edge={x <= 15 || x >= 85 ? "true" : undefined}
       style={{ "--poker-seat-x": `${x}%`, "--poker-seat-y": `${y}%` } as CSSProperties}
     >
@@ -912,64 +908,6 @@ function RulesDialog({ open, table, onClose }: { open: boolean; table: TableStat
   );
 }
 
-function HistorySheet({ open, space, onClose }: { open: boolean; space: Space; onClose: () => void }) {
-  const [operations, setOperations] = useState<WalletOperation[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    setError("");
-    api<{ operations: WalletOperation[] }>(`/api/spaces/${space.id}/operations`)
-      .then((result) => setOperations(result.operations || []))
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "读取记录失败"))
-      .finally(() => setLoading(false));
-  }, [open, space.id]);
-
-  return (
-    <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
-      <SheetContent className="sm:max-w-2xl">
-        <SheetHeader>
-          <SheetTitle>资金记录</SheetTitle>
-          <SheetDescription>最近 50 笔买入和离桌结算。异常操作不会自动重试。</SheetDescription>
-        </SheetHeader>
-        <Separator />
-        <ScrollArea className="min-h-0 flex-1 px-4">
-          {error ? (
-            <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
-          ) : loading ? (
-            <div className="grid gap-3">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div>
-          ) : operations.length === 0 ? (
-            <Empty className="min-h-72">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><CircleDollarSign /></EmptyMedia>
-                <EmptyTitle>还没有资金记录</EmptyTitle>
-                <EmptyDescription>完成一次买入或离桌结算后，记录会显示在这里。</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <Table>
-              <TableHeader><TableRow><TableHead>类型</TableHead><TableHead>牌桌</TableHead><TableHead>时间</TableHead><TableHead>金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader>
-              <TableBody>
-                {operations.map((operation) => (
-                  <TableRow key={operation.id}>
-                    <TableCell className="font-medium">{operation.kind === "buy_in" ? "买入牌桌" : "离桌结算"}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{operation.table_id === "main" ? "默认桌" : operation.table_id.slice(0, 8)}</TableCell>
-                    <TableCell className="text-muted-foreground">{new Date(operation.created_at).toLocaleString()}</TableCell>
-                    <TableCell className="font-mono">{operation.kind === "buy_in" ? "−" : "+"}{money(operation.cents)}</TableCell>
-                    <TableCell><Badge variant={operation.status === "completed" ? "secondary" : operation.status === "manual_review" ? "destructive" : "outline"}>{statusLabel(operation.status)}</Badge></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </ScrollArea>
-      </SheetContent>
-    </Sheet>
-  );
-}
-
 function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return (
     <Tooltip>
@@ -1138,8 +1076,4 @@ function money(cents: number) {
 
 function hostOf(value: string) {
   try { return new URL(value).host; } catch { return value; }
-}
-
-function statusLabel(status: string) {
-  return ({ completed: "已完成", pending: "处理中", manual_review: "需核对", compensated: "已退回" } as Record<string, string>)[status] || status;
 }

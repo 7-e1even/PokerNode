@@ -187,7 +187,9 @@ Claude Code 可写入项目根目录 `.mcp.json`；其他采用 `mcpServers` 格
 
 ## 可选：微信登录
 
-需要在 `.env` 中同时设置：
+推荐由超级管理员在“运营后台 → 系统设置 → 微信登录”中配置 AppID、AppSecret、回调地址和启用状态。保存后立即生效，无需重启服务；AppSecret 会使用 `POKERNODE_ENCRYPTION_KEY` 加密保存，后台接口不会返回明文。
+
+也可以在 `.env` 中提供初始或备用配置：
 
 ```dotenv
 WECHAT_APP_ID=网站应用AppID
@@ -195,7 +197,7 @@ WECHAT_APP_SECRET=网站应用AppSecret
 WECHAT_REDIRECT_URI=https://你的域名/api/auth/wechat/callback
 ```
 
-不设置时，账号密码登录仍可正常使用。
+一旦后台保存过配置，数据库中的设置优先于环境变量。不启用或未配置微信登录时，账号密码登录仍可正常使用。
 
 ## 生产提醒
 

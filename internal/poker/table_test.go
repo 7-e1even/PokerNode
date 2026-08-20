@@ -113,6 +113,45 @@ func TestSeatChangesClearReadyState(t *testing.T) {
 	}
 }
 
+func TestPlayerCanJoinOpenSeatDuringHandForNextDeal(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	_, _ = table.Join(1, "Alice", 10_000)
+	_, _ = table.Join(2, "Bob", 10_000)
+	if err := table.StartHand(1); err != nil {
+		t.Fatal(err)
+	}
+	before := table.Snapshot(1)
+	if _, err := table.Join(3, "Cara", 10_000); err != nil {
+		t.Fatalf("joining an open seat during a hand: %v", err)
+	}
+	after := table.Snapshot(3)
+	if after.ViewerSeat < 0 || after.Street != before.Street || after.ActingSeat != before.ActingSeat {
+		t.Fatalf("joining should reserve a seat without changing the active hand: before=%+v after=%+v", before, after)
+	}
+	var joined PlayerView
+	for _, player := range after.Players {
+		if player.UserID == 3 {
+			joined = player
+		}
+	}
+	if joined.InHand || len(joined.Cards) != 0 || after.CanStart || after.CanLeave {
+		t.Fatalf("new player must wait for the next hand: player=%+v snapshot=%+v", joined, after)
+	}
+
+	actorID := int64(0)
+	for _, player := range after.Players {
+		if player.Seat == after.ActingSeat {
+			actorID = player.UserID
+		}
+	}
+	if err := table.Act(actorID, ActionFold, 0); err != nil {
+		t.Fatal(err)
+	}
+	if started, err := table.Ready(3); err != nil || started {
+		t.Fatalf("joined player should be able to ready for the next hand: started=%v err=%v", started, err)
+	}
+}
+
 func TestActionTimeoutFoldsWhenFacingBet(t *testing.T) {
 	current := time.Unix(1_800_000_000, 0)
 	table := NewTable("main", "Test", 50, 100)
@@ -304,6 +343,60 @@ func TestSidePotAwardsCorrectWinners(t *testing.T) {
 	}
 }
 
+func TestUncalledAllInIsRefundedInsteadOfMarkedAsWinnings(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	table.state.HandID = 29
+	table.state.Street = StreetRiver
+	table.state.Dealer = 1
+	table.state.Board = cards("3s", "Tc", "2d", "Js", "8d")
+	table.state.Seats[0] = &Player{UserID: 1, Name: "admin123", Seat: 0, Hole: cards("7c", "Jc"), InHand: true, AllIn: true, Committed: 1_000}
+	table.state.Seats[1] = &Player{UserID: 2, Name: "l4zily", Seat: 1, Hole: cards("8h", "3c"), Stack: 842, InHand: true, AllIn: true, Committed: 158}
+
+	table.finishShowdownLocked()
+	result := table.state.LastResult
+	if result == nil {
+		t.Fatal("showdown result was not recorded")
+	}
+	if result.Pot != 316 || result.Payouts[2] != 316 || len(result.Payouts) != 1 {
+		t.Fatalf("only the contestable pot should be awarded to l4zily: %+v", result)
+	}
+	if result.Refunds[1] != 842 || len(result.Refunds) != 1 {
+		t.Fatalf("uncalled excess must be recorded as a refund: %+v", result.Refunds)
+	}
+	admin, _ := table.StackFor(1)
+	winner, _ := table.StackFor(2)
+	if admin != 842 || winner != 1_158 {
+		t.Fatalf("unexpected final stacks admin=%d l4zily=%d", admin, winner)
+	}
+	if result.Message != "l4zily win at showdown" {
+		t.Fatalf("refunded player must not be announced as a winner: %q", result.Message)
+	}
+	if len(result.Players) != 2 || result.Players[0].Net != -158 || result.Players[1].Net != 158 {
+		t.Fatalf("unexpected participant ledger: %+v", result.Players)
+	}
+}
+
+func TestCannotRaiseBeyondOpponentsEffectiveStack(t *testing.T) {
+	table := NewTable("main", "Test", 50, 100)
+	table.state.Street = StreetFlop
+	table.state.CurrentBet = 158
+	table.state.MinRaise = 100
+	table.state.Acting = 0
+	table.state.Seats[0] = &Player{UserID: 1, Name: "Deep", Seat: 0, Stack: 1_000, InHand: true}
+	table.state.Seats[1] = &Player{UserID: 2, Name: "Short", Seat: 1, Bet: 158, Committed: 158, InHand: true, AllIn: true}
+
+	allowed := table.Snapshot(1).Allowed
+	if !allowed.CanCall || allowed.CanRaise || allowed.CanAllIn || allowed.MaxRaiseTo != 158 {
+		t.Fatalf("deep stack should only be able to call or fold: %+v", allowed)
+	}
+	if err := table.Act(1, ActionRaise, 200); err == nil {
+		t.Fatal("server accepted a raise no opponent could match")
+	}
+	if err := table.Act(1, ActionAllIn, 0); err == nil {
+		t.Fatal("server accepted an unmatched all-in")
+	}
+}
+
 func TestIncompleteAllInDoesNotReopenRaise(t *testing.T) {
 	table := NewTable("main", "Test", 50, 100)
 	table.state.Street = StreetFlop
@@ -332,6 +425,7 @@ func TestCumulativeShortAllInsReopenRaise(t *testing.T) {
 	table.state.Acting = 0
 	table.state.Seats[0] = &Player{UserID: 1, Name: "Alice", Seat: 0, Stack: 1_000, Bet: 100, Committed: 100, InHand: true}
 	table.state.Seats[1] = &Player{UserID: 2, Name: "Bob", Seat: 1, Bet: 200, Committed: 200, InHand: true, AllIn: true}
+	table.state.Seats[2] = &Player{UserID: 3, Name: "Cara", Seat: 2, Stack: 1_000, Bet: 200, Committed: 200, InHand: true}
 	table.state.Acted[0] = true
 	table.state.ActedAtBet[0] = 100
 

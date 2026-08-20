@@ -67,6 +67,14 @@ type LoginHeroImageConfig struct {
 	Zoom      float64
 }
 
+type WeChatSettings struct {
+	AppID        string
+	AppSecretEnc string
+	RedirectURI  string
+	Enabled      bool
+	UpdatedAt    string
+}
+
 func (u User) HasPassword() bool {
 	return u.PasswordHash != externalLoginPasswordHash
 }
@@ -113,6 +121,16 @@ type PersistedTableState struct {
 	SpaceID string
 	TableID string
 	Data    []byte
+}
+
+type HandHistory struct {
+	SpaceID     string
+	TableID     string
+	HandID      int64
+	UserID      int64
+	GameType    string
+	Snapshot    []byte
+	CompletedAt string
 }
 
 type MCPKey struct {
@@ -269,6 +287,14 @@ CREATE TABLE IF NOT EXISTS app_assets (
   zoom DOUBLE PRECISION NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wechat_settings (
+  id SMALLINT PRIMARY KEY CHECK(id = 1),
+  app_id TEXT NOT NULL,
+  app_secret_enc TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS spaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -335,6 +361,17 @@ CREATE TABLE IF NOT EXISTS table_states (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (space_id, table_id)
 );
+CREATE TABLE IF NOT EXISTS hand_histories (
+  space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  table_id TEXT NOT NULL,
+  hand_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL REFERENCES users(id),
+  game_type TEXT NOT NULL,
+  snapshot_json BYTEA NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (space_id, table_id, hand_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS hand_histories_user_idx ON hand_histories(space_id, user_id, completed_at DESC);
 CREATE TABLE IF NOT EXISTS active_table_seats (
   user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   space_id TEXT NOT NULL,
@@ -1065,6 +1102,27 @@ func (s *Store) SetRegistrationEnabled(ctx context.Context, enabled bool) error 
 	return err
 }
 
+func (s *Store) WeChatSettings(ctx context.Context) (WeChatSettings, error) {
+	var settings WeChatSettings
+	err := s.db.QueryRowContext(ctx, `SELECT app_id,app_secret_enc,redirect_uri,enabled,updated_at FROM wechat_settings WHERE id=1`).Scan(
+		&settings.AppID, &settings.AppSecretEnc, &settings.RedirectURI, &settings.Enabled, &settings.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WeChatSettings{}, ErrNotFound
+	}
+	return settings, err
+}
+
+func (s *Store) SetWeChatSettings(ctx context.Context, settings WeChatSettings) error {
+	settings.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO wechat_settings(id,app_id,app_secret_enc,redirect_uri,enabled,updated_at)
+VALUES(1,$1,$2,$3,$4,$5)
+ON CONFLICT(id) DO UPDATE SET app_id=EXCLUDED.app_id,app_secret_enc=EXCLUDED.app_secret_enc,redirect_uri=EXCLUDED.redirect_uri,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at`,
+		settings.AppID, settings.AppSecretEnc, settings.RedirectURI, settings.Enabled, settings.UpdatedAt,
+	)
+	return err
+}
+
 func (s *Store) SetLoginHeroImage(ctx context.Context, contentType string, data []byte) (string, error) {
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO app_assets(key,content_type,data,position_x,position_y,zoom,updated_at)
@@ -1425,6 +1483,49 @@ func (s *Store) SaveTableState(ctx context.Context, spaceID, tableID string, dat
 	_, err := s.db.ExecContext(ctx, `INSERT INTO table_states(space_id,table_id,state_json,updated_at) VALUES($1,$2,$3,$4)
 ON CONFLICT(space_id,table_id) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at`, spaceID, tableID, data, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) SaveTableStateWithHandHistories(ctx context.Context, spaceID, tableID string, data []byte, histories []HandHistory) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO table_states(space_id,table_id,state_json,updated_at) VALUES($1,$2,$3,$4)
+ON CONFLICT(space_id,table_id) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at`, spaceID, tableID, data, now); err != nil {
+		return err
+	}
+	for _, history := range histories {
+		completedAt := history.CompletedAt
+		if completedAt == "" {
+			completedAt = now
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO hand_histories(space_id,table_id,hand_id,user_id,game_type,snapshot_json,completed_at)
+VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(space_id,table_id,hand_id,user_id) DO NOTHING`,
+			spaceID, tableID, history.HandID, history.UserID, history.GameType, history.Snapshot, completedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) HandHistories(ctx context.Context, spaceID string, userID int64) ([]HandHistory, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT space_id,table_id,hand_id,user_id,game_type,snapshot_json,completed_at
+FROM hand_histories WHERE space_id=$1 AND user_id=$2 ORDER BY completed_at DESC,hand_id DESC LIMIT 50`, spaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	histories := make([]HandHistory, 0)
+	for rows.Next() {
+		var history HandHistory
+		if err := rows.Scan(&history.SpaceID, &history.TableID, &history.HandID, &history.UserID, &history.GameType, &history.Snapshot, &history.CompletedAt); err != nil {
+			return nil, err
+		}
+		histories = append(histories, history)
+	}
+	return histories, rows.Err()
 }
 
 func (s *Store) LoadTableState(ctx context.Context, spaceID, tableID string) ([]byte, error) {
