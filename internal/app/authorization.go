@@ -28,7 +28,7 @@ func (s *Server) permissionsForUser(ctx context.Context, user store.User) ([]acc
 		seen[permission] = struct{}{}
 		permissions = append(permissions, permission)
 	}
-	return permissions, nil
+	return access.ExpandPermissions(permissions), nil
 }
 
 func (s *Server) hasPermission(ctx context.Context, user store.User, permission access.Permission) (bool, error) {

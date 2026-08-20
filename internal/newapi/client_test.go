@@ -20,6 +20,13 @@ func TestNormalizeBaseURLDropsProfilePath(t *testing.T) {
 }
 
 func TestCentsToQuota(t *testing.T) {
+	maxCents, err := MaxCentsForQuota(500_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxCents != math.MaxInt64/5_000 {
+		t.Fatalf("unexpected maximum cents %d", maxCents)
+	}
 	quota, err := CentsToQuota(123, 500_000)
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +34,7 @@ func TestCentsToQuota(t *testing.T) {
 	if quota != 615_000 {
 		t.Fatalf("unexpected quota %d", quota)
 	}
-	if _, err := CentsToQuota(math.MaxInt64, 500_000); err == nil {
+	if _, err := CentsToQuota(maxCents+1, 500_000); err == nil {
 		t.Fatal("expected overflow to be rejected")
 	}
 }

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { Activity, Eye, EyeOff, ImageUp, KeyRound, LockKeyhole, Plus, RadioTower, RotateCcw, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, Trophy, UserCog, UsersRound } from "lucide-react";
+import { Activity, Eye, EyeOff, ImageUp, KeyRound, LockKeyhole, Pencil, Plus, RadioTower, RotateCcw, Search, Server, ShieldAlert, ShieldCheck, Table2, Trash2, Trophy, UserCog, UsersRound } from "lucide-react";
 import { toast } from "sonner";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { LoginHeroImage } from "@/components/login-hero-image";
 import { SectionCards } from "@/components/section-cards";
 import { WeChatLoginSettings } from "@/components/wechat-login-settings";
+import { DEFAULT_FAVICON_URL } from "@/branding";
 import type { AdminSection } from "@/components/app-sidebar";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -29,14 +30,16 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, patch, post, put, remove, upload } from "./api";
 import BalanceManager from "./BalanceManager";
+import ChannelManager from "./ChannelManager";
 import RoleManager from "./RoleManager";
-import { DEFAULT_LOGIN_HERO_CONFIG, DEFAULT_WECHAT_LOGIN_CONFIG, type AdminOverview, type AdminSpaceSummary, type LoginHeroConfig, type Role, type User, type UserRole, type UserStatus } from "./types";
+import { DEFAULT_BRANDING_CONFIG, DEFAULT_LOGIN_HERO_CONFIG, DEFAULT_WECHAT_LOGIN_CONFIG, type AdminOverview, type AdminRankingEntry, type AdminSpaceSummary, type BrandingConfig, type LoginHeroConfig, type Role, type User, type UserRole, type UserStatus } from "./types";
 
 interface Props {
   currentUser: User;
   section: AdminSection;
   onRegistrationChanged: (enabled: boolean) => void;
   onLoginHeroChanged: (config: LoginHeroConfig) => void;
+  onBrandingChanged: (config: BrandingConfig) => void;
   onWeChatLoginChanged: (enabled: boolean) => void;
 }
 
@@ -62,12 +65,13 @@ function normalizeAdminOverview(result: AdminOverview): AdminOverview {
         }))
       : [],
     permission_catalog: Array.isArray(result.permission_catalog) ? result.permission_catalog : [],
+    branding: { ...DEFAULT_BRANDING_CONFIG, ...(result.branding || {}) },
     login_hero: { ...DEFAULT_LOGIN_HERO_CONFIG, ...(result.login_hero || {}) },
     wechat_login: { ...DEFAULT_WECHAT_LOGIN_CONFIG, ...(result.wechat_login || {}) },
   };
 }
 
-export default function AdminConsole({ currentUser, section, onRegistrationChanged, onLoginHeroChanged, onWeChatLoginChanged }: Props) {
+export default function AdminConsole({ currentUser, section, onRegistrationChanged, onLoginHeroChanged, onBrandingChanged, onWeChatLoginChanged }: Props) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -81,7 +85,11 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   const [registrationBusy, setRegistrationBusy] = useState(false);
   const [loginHeroBusy, setLoginHeroBusy] = useState(false);
   const [loginHeroDraft, setLoginHeroDraft] = useState<LoginHeroConfig | null>(null);
+  const [brandingDraft, setBrandingDraft] = useState<BrandingConfig | null>(null);
+  const [brandingBusy, setBrandingBusy] = useState(false);
+  const [faviconBusy, setFaviconBusy] = useState(false);
   const loginHeroInputRef = useRef<HTMLInputElement>(null);
+  const faviconInputRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     setError("");
@@ -90,8 +98,10 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
       const normalized = normalizeAdminOverview(result);
       setOverview(normalized);
       setLoginHeroDraft(normalized.login_hero);
+      setBrandingDraft(normalized.branding);
       onRegistrationChanged(normalized.registration_enabled);
       onLoginHeroChanged(normalized.login_hero);
+      onBrandingChanged(normalized.branding);
       onWeChatLoginChanged(normalized.wechat_login.enabled);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取运营数据失败");
@@ -112,7 +122,10 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   const canManageUsers = permissions.has("users:manage");
   const canManageRoles = permissions.has("roles:manage");
   const canManageRegistration = permissions.has("registration:manage");
-  const canManageLoginHero = currentUser.role === "super_admin";
+  const canManageRankings = permissions.has("rankings:manage");
+  const canManageBalances = permissions.has("balances:manage");
+  const canManageAuthSettings = permissions.has("auth_settings:manage");
+  const canManageLoginHero = permissions.has("branding:manage");
 
   async function saveRegistration(enabled: boolean) {
     setRegistrationBusy(true);
@@ -126,6 +139,70 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     } finally {
       setRegistrationBusy(false);
       setConfirmCloseRegistration(false);
+    }
+  }
+
+  function applyBrandingUpdate(nextBranding: BrandingConfig) {
+    setOverview((current) => current ? { ...current, branding: nextBranding } : current);
+    setBrandingDraft(nextBranding);
+    onBrandingChanged(nextBranding);
+  }
+
+  async function saveBranding(event: FormEvent) {
+    event.preventDefault();
+    if (!brandingDraft) return;
+    setBrandingBusy(true);
+    try {
+      const result = await put<{ branding: BrandingConfig }>("/api/admin/settings/branding", {
+        site_name: brandingDraft.site_name,
+        page_title: brandingDraft.page_title,
+      });
+      applyBrandingUpdate(result.branding);
+      toast.success("站点名称和浏览器标题已保存");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "站点品牌保存失败");
+    } finally {
+      setBrandingBusy(false);
+    }
+  }
+
+  async function uploadFavicon(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      toast.error("站点图标仅支持 PNG、JPEG 或 WebP");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      toast.error("站点图标不能超过 1 MB");
+      return;
+    }
+    setFaviconBusy(true);
+    try {
+      const body = new FormData();
+      body.append("image", file);
+      const result = await upload<{ branding: BrandingConfig }>("/api/admin/settings/favicon", body);
+      applyBrandingUpdate(result.branding);
+      toast.success("站点图标已更新");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "站点图标上传失败");
+    } finally {
+      setFaviconBusy(false);
+    }
+  }
+
+  async function resetFavicon() {
+    if (!overview) return;
+    setFaviconBusy(true);
+    try {
+      await remove("/api/admin/settings/favicon");
+      applyBrandingUpdate({ ...overview.branding, favicon_url: "" });
+      toast.success("已恢复默认站点图标");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "恢复默认图标失败");
+    } finally {
+      setFaviconBusy(false);
     }
   }
 
@@ -245,20 +322,20 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
     users: permissions.has("users:read") || canManageUsers,
     roles: canManageRoles,
     channels: permissions.has("channels:manage"),
-    balances: permissions.has("balances:manage"),
-    rankings: currentUser.role === "super_admin",
-    settings: canManageRegistration || canManageLoginHero,
+    balances: canManageBalances,
+    rankings: canManageRankings,
+    settings: canManageRegistration || canManageAuthSettings || canManageLoginHero,
   }[section];
   if (!sectionAllowed) {
     return <div className="p-4 sm:p-6 lg:p-8"><Alert variant="destructive"><AlertDescription>当前角色没有访问此功能的权限。</AlertDescription></Alert></div>;
   }
 
   if (section === "roles") {
-    return <RoleManager roles={overview.roles} catalog={overview.permission_catalog} onChanged={(roles) => setOverview((current) => current ? { ...current, roles } : current)} />;
+    return <RoleManager roles={overview.roles} catalog={overview.permission_catalog} grantablePermissions={overview.permissions} onChanged={(roles) => setOverview((current) => current ? { ...current, roles } : current)} />;
   }
 
   if (section === "rankings") {
-    return <RankingManager users={users} allUsers={overview.users} query={query} onQueryChange={setQuery} onChanged={(user) => setOverview((current) => current ? withUser(current, user) : current)} />;
+    return <RankingManager users={users} allUsers={overview.users} spaces={overview.spaces} query={query} onQueryChange={setQuery} onChanged={(user) => setOverview((current) => current ? withUser(current, user) : current)} />;
   }
 
   if (section === "channels") {
@@ -269,10 +346,16 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
           <SummaryMetric title="频道成员" value={overview.platform_counts.memberships} description={`${overview.platform_counts.bound_memberships} 个已绑定`} icon={<UsersRound />} />
           <SummaryMetric title="牌桌总数" value={overview.platform_counts.tables} description="数据库持久化牌桌" icon={<Table2 />} />
         </div>
-        <Card>
-          <CardHeader><CardTitle>频道节点</CardTitle><CardDescription>管理员 Token 仅显示末四位；密文不会返回前端。</CardDescription><CardAction><Badge variant="outline">{overview.spaces.length} 个节点</Badge></CardAction></CardHeader>
-          <CardContent><ChannelTable spaces={overview.spaces} /></CardContent>
-        </Card>
+        <ChannelManager spaces={overview.spaces} canManageBalances={canManageBalances} onSpaceChanged={(space) => setOverview((current) => {
+          if (!current) return current;
+          const previous = current.spaces.find((item) => item.id === space.id);
+          const tableDelta = space.table_count - (previous?.table_count || 0);
+          return {
+            ...current,
+            spaces: current.spaces.map((item) => item.id === space.id ? space : item),
+            platform_counts: { ...current.platform_counts, tables: Math.max(0, current.platform_counts.tables + tableDelta) },
+          };
+        })} />
       </div>
     );
   }
@@ -288,12 +371,46 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
   }
 
   if (section === "settings") {
+    const brandDraft = brandingDraft ?? overview.branding;
+    const brandingChanged = brandDraft.site_name !== overview.branding.site_name || brandDraft.page_title !== overview.branding.page_title;
     const heroDraft = loginHeroDraft ?? overview.login_hero;
     const heroPlacementChanged = heroDraft.position_x !== overview.login_hero.position_x
       || heroDraft.position_y !== overview.login_hero.position_y
       || heroDraft.zoom !== overview.login_hero.zoom;
     return (
       <div className="flex flex-1 flex-col gap-6 overflow-auto bg-background p-4 sm:p-6 lg:p-8">
+        <Card>
+          <CardHeader><CardTitle>站点品牌</CardTitle><CardDescription>统一浏览器标签、favicon 和大厅主要品牌名称；产品功能文案保持不变。</CardDescription><CardAction><Badge variant={overview.branding.favicon_url ? "secondary" : "outline"}>{overview.branding.favicon_url ? "自定义图标" : "默认图标"}</Badge></CardAction></CardHeader>
+          <CardContent className="grid items-start gap-6 lg:grid-cols-2">
+            <form onSubmit={saveBranding}>
+              <FieldGroup>
+                <Field data-disabled={!canManageLoginHero}>
+                  <FieldLabel htmlFor="site-name">站点名称</FieldLabel>
+                  <Input id="site-name" value={brandDraft.site_name} maxLength={32} disabled={!canManageLoginHero || brandingBusy} onChange={(event) => setBrandingDraft({ ...brandDraft, site_name: event.target.value })} required />
+                  <FieldDescription>显示在玩家大厅和运营后台品牌区域，最多 32 个字符。</FieldDescription>
+                </Field>
+                <Field data-disabled={!canManageLoginHero}>
+                  <FieldLabel htmlFor="page-title">浏览器标题</FieldLabel>
+                  <Input id="page-title" value={brandDraft.page_title} maxLength={80} disabled={!canManageLoginHero || brandingBusy} onChange={(event) => setBrandingDraft({ ...brandDraft, page_title: event.target.value })} required />
+                  <FieldDescription>保存后当前页面和之后打开的标签会立即使用，最多 80 个字符。</FieldDescription>
+                </Field>
+                <Button className="self-start" disabled={!canManageLoginHero || brandingBusy || !brandingChanged || !brandDraft.site_name.trim() || !brandDraft.page_title.trim()}>{brandingBusy && <Spinner data-icon="inline-start" />}{brandingBusy ? "正在保存…" : "保存品牌文字"}</Button>
+              </FieldGroup>
+            </form>
+            <FieldGroup>
+              <Field orientation="horizontal" data-disabled={!canManageLoginHero}>
+                <img src={overview.branding.favicon_url || DEFAULT_FAVICON_URL} alt="当前站点图标" className="size-16 shrink-0 rounded-xl border bg-muted object-contain p-2" />
+                <FieldContent><FieldTitle>浏览器图标</FieldTitle><FieldDescription>建议上传正方形 PNG；也支持 JPEG、WebP，最大 1 MB。未上传时使用当前 PokerNode 标志。</FieldDescription></FieldContent>
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Input ref={faviconInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" disabled={!canManageLoginHero || faviconBusy} onChange={(event) => void uploadFavicon(event)} />
+                <Button type="button" variant="outline" disabled={!canManageLoginHero || faviconBusy} onClick={() => faviconInputRef.current?.click()}>{faviconBusy && <Spinner data-icon="inline-start" />}{!faviconBusy && <ImageUp data-icon="inline-start" />}{overview.branding.favicon_url ? "更换图标" : "上传图标"}</Button>
+                <Button type="button" variant="ghost" disabled={!canManageLoginHero || faviconBusy || !overview.branding.favicon_url} onClick={() => void resetFavicon()}><RotateCcw data-icon="inline-start" />恢复默认</Button>
+              </div>
+              {!canManageLoginHero && <Alert><AlertDescription>当前角色没有管理站点品牌的权限。</AlertDescription></Alert>}
+            </FieldGroup>
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>登录页宣传图</CardTitle><CardDescription>右侧图片区域沿用 shadcn 官方登录页布局；未上传时显示官方式灰色占位。</CardDescription><CardAction><Badge variant={heroDraft.url ? "secondary" : "outline"}>{heroDraft.url ? "自定义" : "默认"}</Badge></CardAction></CardHeader>
           <CardContent className="grid items-start gap-6 lg:grid-cols-[minmax(280px,28rem)_1fr]">
@@ -316,11 +433,11 @@ export default function AdminConsole({ currentUser, section, onRegistrationChang
                 <Button disabled={!canManageLoginHero || loginHeroBusy || !heroDraft.url || !heroPlacementChanged} onClick={() => void saveLoginHeroPlacement()}>保存取景</Button>
                 <Button variant="ghost" disabled={!canManageLoginHero || loginHeroBusy || !heroDraft.url} onClick={() => void resetLoginHero()}><RotateCcw data-icon="inline-start" />恢复默认</Button>
               </div>
-              {!canManageLoginHero && <Alert><AlertDescription>只有超级管理员可以修改登录页宣传图。</AlertDescription></Alert>}
+              {!canManageLoginHero && <Alert><AlertDescription>当前角色没有管理登录页展示的权限。</AlertDescription></Alert>}
             </FieldGroup>
           </CardContent>
         </Card>
-        <WeChatLoginSettings settings={overview.wechat_login} canManage={canManageLoginHero} onChanged={(settings) => {
+        <WeChatLoginSettings settings={overview.wechat_login} canManage={canManageAuthSettings} onChanged={(settings) => {
           setOverview((current) => current ? { ...current, wechat_login: settings } : current);
           onWeChatLoginChanged(settings.enabled);
         }} />
@@ -566,15 +683,89 @@ function ChannelScopeField({ spaces, selected, onChange }: { spaces: AdminSpaceS
   );
 }
 
-function RankingManager({ users, allUsers, query, onQueryChange, onChanged }: {
+function RankingManager({ users, allUsers, spaces, query, onQueryChange, onChanged }: {
   users: User[];
   allUsers: User[];
+  spaces: AdminSpaceSummary[];
   query: string;
   onQueryChange: (value: string) => void;
   onChanged: (user: User) => void;
 }) {
   const [busyID, setBusyID] = useState<number | null>(null);
+  const [scopeSpaceID, setScopeSpaceID] = useState("");
+  const [entries, setEntries] = useState<AdminRankingEntry[]>([]);
+  const [rankingsLoading, setRankingsLoading] = useState(true);
+  const [rankingsError, setRankingsError] = useState("");
+  const [rankingQuery, setRankingQuery] = useState("");
+  const [editingEntry, setEditingEntry] = useState<AdminRankingEntry | null>(null);
+  const [amount, setAmount] = useState("");
+  const [amountBusy, setAmountBusy] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const loadSequence = useRef(0);
   const hiddenCount = allUsers.filter((user) => user.ranking_hidden).length;
+  const selectedSpace = spaces.find((space) => space.id === scopeSpaceID);
+  const scopeLabel = selectedSpace?.name || "全部频道";
+  const amountCents = useMemo(() => signedDollarsToCents(amount), [amount]);
+  const amountInvalid = amount.trim().length > 0 && amountCents === null;
+  const visibleEntries = useMemo(() => {
+    const needle = rankingQuery.trim().toLowerCase();
+    if (!needle) return entries;
+    return entries.filter((entry) => entry.display_name.toLowerCase().includes(needle));
+  }, [entries, rankingQuery]);
+  const entryRanks = useMemo(() => new Map(entries.map((entry, index) => [entry.user_id, index + 1])), [entries]);
+
+  async function loadRankings() {
+    const sequence = ++loadSequence.current;
+    setRankingsLoading(true);
+    setRankingsError("");
+    try {
+      const suffix = scopeSpaceID ? `?space_id=${encodeURIComponent(scopeSpaceID)}` : "";
+      const result = await api<{ entries: AdminRankingEntry[] }>(`/api/admin/rankings${suffix}`);
+      if (sequence === loadSequence.current) setEntries(result.entries || []);
+    } catch (caught) {
+      if (sequence === loadSequence.current) setRankingsError(caught instanceof Error ? caught.message : "读取排行榜金额失败");
+    } finally {
+      if (sequence === loadSequence.current) setRankingsLoading(false);
+    }
+  }
+
+  useEffect(() => { void loadRankings(); }, [scopeSpaceID]);
+
+  function openAmountEditor(entry: AdminRankingEntry) {
+    setEditingEntry(entry);
+    setAmount((entry.net_cents / 100).toFixed(2));
+  }
+
+  async function saveAmount(event: FormEvent) {
+    event.preventDefault();
+    if (!editingEntry || amountCents === null) return;
+    setAmountBusy(true);
+    try {
+      await put(`/api/admin/rankings/${editingEntry.user_id}/amount`, { space_id: scopeSpaceID, net_cents: amountCents });
+      await loadRankings();
+      toast.success(`${editingEntry.display_name} 在${scopeLabel}的净胜金额已更新`);
+      setEditingEntry(null);
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "排行榜金额保存失败");
+    } finally {
+      setAmountBusy(false);
+    }
+  }
+
+  async function resetAmounts() {
+    setResetBusy(true);
+    try {
+      const result = await post<{ reset_users: number }>("/api/admin/rankings/reset", { space_id: scopeSpaceID });
+      await loadRankings();
+      toast.success(`${scopeLabel}已有 ${result.reset_users} 名玩家的排行榜金额置零`);
+      setResetOpen(false);
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "排行榜金额置零失败");
+    } finally {
+      setResetBusy(false);
+    }
+  }
 
   async function toggle(user: User) {
     setBusyID(user.id);
@@ -591,6 +782,43 @@ function RankingManager({ users, allUsers, query, onQueryChange, onChanged }: {
 
   return (
     <div className="flex flex-1 flex-col gap-6 overflow-auto bg-background p-4 sm:p-6 lg:p-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>排行榜金额</CardTitle>
+          <CardDescription>修改的是当前显示净胜金额；牌局记录、资金流水和场次保持原样，之后的新结算会继续累计。</CardDescription>
+          <CardAction><Button variant="destructive" disabled={rankingsLoading || entries.length === 0} onClick={() => setResetOpen(true)}><RotateCcw data-icon="inline-start" />当前范围全部置零</Button></CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Select value={scopeSpaceID || "all"} onValueChange={(value) => setScopeSpaceID(value === "all" ? "" : value)}>
+              <SelectTrigger className="w-full sm:w-64" aria-label="选择排行榜范围"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectGroup><SelectItem value="all">全部频道</SelectItem>{spaces.map((space) => <SelectItem key={space.id} value={space.id}>{space.name}</SelectItem>)}</SelectGroup></SelectContent>
+            </Select>
+            <InputGroup className="w-full sm:max-w-sm"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput value={rankingQuery} onChange={(event) => setRankingQuery(event.target.value)} placeholder="搜索排行榜玩家" aria-label="搜索排行榜玩家" /></InputGroup>
+          </div>
+          {rankingsError ? <Alert variant="destructive"><AlertDescription>{rankingsError}</AlertDescription></Alert> : rankingsLoading ? (
+            <div className="flex flex-col gap-3">{Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-14" />)}</div>
+          ) : visibleEntries.length === 0 ? (
+            <Empty className="min-h-56 border"><EmptyHeader><EmptyMedia variant="icon"><Trophy /></EmptyMedia><EmptyTitle>{entries.length ? "没有匹配的玩家" : "当前范围没有排行榜玩家"}</EmptyTitle><EmptyDescription>{entries.length ? "换一个显示名称试试。" : "玩家加入频道后会出现在这里。"}</EmptyDescription></EmptyHeader></Empty>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border">
+              <Table>
+                <TableHeader><TableRow><TableHead className="hidden w-16 sm:table-cell">排名</TableHead><TableHead>玩家</TableHead><TableHead className="hidden text-right sm:table-cell">场次</TableHead><TableHead className="text-right">当前净胜</TableHead><TableHead className="w-12 text-right sm:w-auto">操作</TableHead></TableRow></TableHeader>
+                <TableBody>{visibleEntries.map((entry) => (
+                  <TableRow key={entry.user_id}>
+                    <TableCell className="hidden tabular-nums sm:table-cell">{entryRanks.get(entry.user_id)}</TableCell>
+                    <TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={entry.avatar_url} alt={entry.display_name} /><AvatarFallback>{initials(entry.display_name)}</AvatarFallback></Avatar><span className="min-w-0"><strong className="block truncate">{entry.display_name}</strong><small className="block whitespace-nowrap text-muted-foreground sm:hidden">第 {entryRanks.get(entry.user_id)} 名 · {entry.sessions} 场</small>{entry.ranking_hidden && <Badge variant="secondary">已屏蔽</Badge>}</span></div></TableCell>
+                    <TableCell className="hidden text-right tabular-nums sm:table-cell">{entry.sessions}</TableCell>
+                    <TableCell className="whitespace-nowrap text-right text-xs font-semibold tabular-nums sm:text-sm">{formatSignedUSD(entry.net_cents)}</TableCell>
+                    <TableCell className="px-2 text-right sm:px-4"><Button size="sm" variant="outline" aria-label={`修改 ${entry.display_name} 的排行榜金额`} onClick={() => openAmountEditor(entry)}><Pencil /><span className="sr-only sm:not-sr-only">修改金额</span></Button></TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>排名展示账号</CardTitle>
@@ -618,8 +846,43 @@ function RankingManager({ users, allUsers, query, onQueryChange, onChanged }: {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(editingEntry)} onOpenChange={(open) => !open && !amountBusy && setEditingEntry(null)}>
+        <DialogContent>
+          <form onSubmit={saveAmount}>
+            <DialogHeader><DialogTitle>修改排行榜金额</DialogTitle><DialogDescription>{editingEntry?.display_name} · {scopeLabel}。保存后只校准当前净胜金额，后续牌局仍会继续累计。</DialogDescription></DialogHeader>
+            <FieldGroup className="mt-6"><Field data-invalid={amountInvalid}><FieldLabel htmlFor="ranking-net-amount">净胜金额（美元）</FieldLabel><Input id="ranking-net-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="例如：5804.50 或 -1290.50" autoFocus required aria-invalid={amountInvalid} />{amountInvalid ? <FieldError>请输入有效金额，最多保留两位小数</FieldError> : <FieldDescription>可填写正数、负数或 0。</FieldDescription>}</Field></FieldGroup>
+            <DialogFooter className="mt-6"><Button type="button" variant="outline" disabled={amountBusy} onClick={() => setEditingEntry(null)}>取消</Button><Button disabled={amountBusy || amountCents === null}>{amountBusy && <Spinner data-icon="inline-start" />}{amountBusy ? "正在保存…" : "保存金额"}</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={resetOpen} onOpenChange={(open) => !resetBusy && setResetOpen(open)}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogMedia><RotateCcw /></AlertDialogMedia><AlertDialogTitle>将{scopeLabel}排行榜金额全部置零？</AlertDialogTitle><AlertDialogDescription>只会把当前范围内玩家的排行榜净胜金额校准为 0；牌局记录、场次、New API 余额和资金流水都不会删除。之后的新结算会继续累计。</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel disabled={resetBusy}>取消</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={resetBusy} onClick={(event) => { event.preventDefault(); void resetAmounts(); }}>{resetBusy && <Spinner data-icon="inline-start" />}{resetBusy ? "正在置零…" : "确认全部置零"}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
+}
+
+function signedDollarsToCents(value: string): number | null {
+  const normalized = value.trim();
+  if (!/^-?\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const negative = normalized.startsWith("-");
+  const unsigned = negative ? normalized.slice(1) : normalized;
+  const [whole, fraction = ""] = unsigned.split(".");
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (!Number.isSafeInteger(cents)) return null;
+  return negative ? -cents : cents;
+}
+
+function formatSignedUSD(cents: number) {
+  const formatted = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "USD" }).format(Math.abs(cents) / 100);
+  if (cents > 0) return `+${formatted}`;
+  if (cents < 0) return `-${formatted}`;
+  return formatted;
 }
 
 function AdminLoading() {

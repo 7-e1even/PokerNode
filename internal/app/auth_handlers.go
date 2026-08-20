@@ -110,10 +110,16 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	branding, err := s.store.SiteBranding(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"registration_enabled": enabled,
 		"wechat_login_enabled": s.currentWeChat() != nil,
 		"login_hero":           loginHeroImagePayload(loginHeroConfig),
+		"branding":             siteBrandingPayload(branding),
 	})
 }
 
@@ -170,6 +176,20 @@ func (s *Server) handleLoginHeroImage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(asset.Data)
 }
 
+func (s *Server) handleSiteFavicon(w http.ResponseWriter, r *http.Request) {
+	asset, err := s.store.SiteFavicon(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", asset.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(asset.Data)))
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(asset.Data)
+}
+
 func loginHeroImageURL(version string) string {
 	if version == "" {
 		return ""
@@ -183,6 +203,21 @@ func loginHeroImagePayload(config store.LoginHeroImageConfig) map[string]any {
 		"position_x": config.PositionX,
 		"position_y": config.PositionY,
 		"zoom":       config.Zoom,
+	}
+}
+
+func siteFaviconURL(version string) string {
+	if version == "" {
+		return ""
+	}
+	return "/api/branding/favicon?v=" + url.QueryEscape(version)
+}
+
+func siteBrandingPayload(branding store.SiteBranding) map[string]any {
+	return map[string]any{
+		"site_name":   branding.SiteName,
+		"page_title":  branding.PageTitle,
+		"favicon_url": siteFaviconURL(branding.FaviconUpdatedAt),
 	}
 }
 

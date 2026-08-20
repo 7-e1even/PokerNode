@@ -11,7 +11,8 @@ import { BrandMark } from "@/components/brand-mark";
 import { post } from "./api";
 import type { User } from "./types";
 
-export default function AdminAuthScreen({ currentUser, onAuthenticated, onBack }: {
+export default function AdminAuthScreen({ siteName, currentUser, onAuthenticated, onBack }: {
+  siteName: string;
   currentUser?: User | null;
   onAuthenticated: (user: User) => void;
   onBack: () => void;
@@ -40,7 +41,7 @@ export default function AdminAuthScreen({ currentUser, onAuthenticated, onBack }
       <section className="admin-auth__story relative hidden overflow-hidden border-r p-14 lg:flex lg:flex-col lg:justify-between">
         <div className="relative flex items-center gap-3 font-heading text-lg font-semibold">
           <BrandMark className="size-10" />
-          PokerNode Operations
+          {siteName} Operations
         </div>
         <div className="relative max-w-2xl">
           <Badge className="mb-6" variant="outline"><ShieldCheck data-icon="inline-start" />受控运营入口</Badge>

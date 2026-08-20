@@ -34,6 +34,7 @@ export interface PermissionDefinition {
   name: string;
   description: string;
   group: string;
+  requires?: string[];
 }
 
 export interface LoginHeroConfig {
@@ -48,6 +49,18 @@ export const DEFAULT_LOGIN_HERO_CONFIG: LoginHeroConfig = {
   position_x: 50,
   position_y: 50,
   zoom: 1,
+};
+
+export interface BrandingConfig {
+  site_name: string;
+  page_title: string;
+  favicon_url: string;
+}
+
+export const DEFAULT_BRANDING_CONFIG: BrandingConfig = {
+  site_name: "PokerNode",
+  page_title: "PokerNode",
+  favicon_url: "",
 };
 
 export interface WeChatLoginConfig {
@@ -74,6 +87,7 @@ export interface AdminOverview {
   spaces: AdminSpaceSummary[];
   platform_counts: AdminPlatformCounts;
   registration_enabled: boolean;
+  branding: BrandingConfig;
   login_hero: LoginHeroConfig;
   wechat_login: WeChatLoginConfig;
   permissions: string[];
@@ -106,6 +120,15 @@ export interface AdminPlatformCounts {
   failed_operations: number;
 }
 
+export interface AdminRankingEntry {
+  user_id: number;
+  display_name: string;
+  avatar_url?: string;
+  net_cents: number;
+  sessions: number;
+  ranking_hidden: boolean;
+}
+
 export interface Space {
   id: string;
   name: string;
@@ -125,6 +148,10 @@ export interface Membership {
   newapi_display_name?: string;
   user_token_last4?: string;
   poker_display_name: string;
+}
+
+export interface ChannelMember extends Membership {
+  user_id: number;
 }
 
 export interface AccountBinding {
@@ -367,16 +394,6 @@ export interface ChannelLeaderboardEntry {
   sessions: number;
 }
 
-export interface ChannelMessage {
-  id: number;
-  space_id: string;
-  user_id: number;
-  display_name: string;
-  avatar_url?: string;
-  body: string;
-  created_at: string;
-}
-
 export interface ManagedBalanceMember {
   user_id: number;
   poker_display_name: string;
@@ -389,6 +406,6 @@ export interface ManagedBalanceMember {
 }
 
 export interface ManagedBalancesResponse {
-  space: { id: string; name: string; quota_per_usd: number };
+  space: { id: string; name: string; quota_per_usd: number; max_adjustment_cents: number };
   members: ManagedBalanceMember[];
 }

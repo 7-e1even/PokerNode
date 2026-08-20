@@ -240,31 +240,8 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "bob", "display_name": "Bob", "password": "password-2"}, http.StatusCreated, nil)
 	requestJSON(t, bob, http.MethodPost, appServer.URL+"/api/spaces/join", map[string]string{"invite_code": createResult.Space.InviteCode}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/bind", map[string]string{"token": "bob-token"}, http.StatusOK, nil)
-	var firstMessage struct {
-		Message store.SpaceMessage `json:"message"`
-	}
-	requestJSON(t, alice, http.MethodPost, spacePath+"/messages", map[string]string{"body": "今晚八点开局"}, http.StatusCreated, &firstMessage)
-	if firstMessage.Message.UserID != 1 || firstMessage.Message.DisplayName != "Alice" || firstMessage.Message.Body != "今晚八点开局" {
-		t.Fatalf("unexpected first channel message: %#v", firstMessage.Message)
-	}
-	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": "  收到  "}, http.StatusCreated, nil)
-	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": ""}, http.StatusBadRequest, nil)
-	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": strings.Repeat("聊", maxSpaceMessageRunes+1)}, http.StatusBadRequest, nil)
-	var messageList struct {
-		Messages []store.SpaceMessage `json:"messages"`
-	}
-	requestJSON(t, bob, http.MethodGet, spacePath+"/messages", nil, http.StatusOK, &messageList)
-	if len(messageList.Messages) != 2 || messageList.Messages[0].Body != "今晚八点开局" || messageList.Messages[1].Body != "收到" {
-		t.Fatalf("channel messages were not returned in order: %#v", messageList.Messages)
-	}
-	requestJSON(t, bob, http.MethodGet, spacePath+"/messages?after="+strconv.FormatInt(firstMessage.Message.ID, 10), nil, http.StatusOK, &messageList)
-	if len(messageList.Messages) != 1 || messageList.Messages[0].Body != "收到" {
-		t.Fatalf("channel message cursor returned the wrong messages: %#v", messageList.Messages)
-	}
-	outsider := newTestClient(t)
-	requestJSON(t, outsider, http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "outsider", "display_name": "Outsider", "password": "password-3"}, http.StatusCreated, nil)
-	requestJSON(t, outsider, http.MethodGet, spacePath+"/messages", nil, http.StatusNotFound, nil)
-	requestJSON(t, outsider, http.MethodPost, spacePath+"/messages", map[string]string{"body": "不应发送"}, http.StatusNotFound, nil)
+	requestJSON(t, bob, http.MethodGet, spacePath+"/messages", nil, http.StatusNotFound, nil)
+	requestJSON(t, bob, http.MethodPost, spacePath+"/messages", map[string]string{"body": "聊天功能已删除"}, http.StatusNotFound, nil)
 	var accountBindings struct {
 		Bindings []accountBindingView `json:"bindings"`
 	}
@@ -274,6 +251,9 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	}
 	requestJSON(t, bob, http.MethodGet, spacePath+"/managed-balances", nil, http.StatusForbidden, nil)
 	var managed struct {
+		Space struct {
+			MaxAdjustmentCents int64 `json:"max_adjustment_cents"`
+		} `json:"space"`
 		Members []struct {
 			UserID  int64            `json:"user_id"`
 			Balance map[string]int64 `json:"balance"`
@@ -282,6 +262,18 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, alice, http.MethodGet, spacePath+"/managed-balances", nil, http.StatusOK, &managed)
 	if len(managed.Members) != 2 {
 		t.Fatalf("expected both channel members in balance management, got %d", len(managed.Members))
+	}
+	if managed.Space.MaxAdjustmentCents <= 0 {
+		t.Fatalf("expected the balance adjustment limit, got %#v", managed.Space)
+	}
+	var adjustmentError struct {
+		Error string `json:"error"`
+	}
+	requestJSON(t, alice, http.MethodPost, spacePath+"/managed-balances/2/adjust", map[string]any{
+		"direction": "add", "amount_cents": managed.Space.MaxAdjustmentCents + 1, "reason": "Too large",
+	}, http.StatusBadRequest, &adjustmentError)
+	if !strings.Contains(adjustmentError.Error, "单次最多") {
+		t.Fatalf("expected an actionable maximum error, got %q", adjustmentError.Error)
 	}
 	var adjustment struct {
 		Member struct {
@@ -297,13 +289,26 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, alice, http.MethodPost, spacePath+"/managed-balances/2/adjust", map[string]any{
 		"direction": "subtract", "amount_cents": 100, "reason": "Test reversal",
 	}, http.StatusOK, nil)
+	requestJSON(t, alice, http.MethodPost, spacePath+"/managed-balances/2/adjust", map[string]any{
+		"direction": "subtract", "amount_cents": 20_001, "reason": "Too much debit",
+	}, http.StatusConflict, &adjustmentError)
+	if !strings.Contains(adjustmentError.Error, "当前余额 $200.00") {
+		t.Fatalf("expected an actionable balance error, got %q", adjustmentError.Error)
+	}
 	var operations struct {
 		Operations []store.WalletOperation `json:"operations"`
+		Pagination paginationView          `json:"pagination"`
 	}
 	requestJSON(t, bob, http.MethodGet, spacePath+"/operations", nil, http.StatusOK, &operations)
-	if len(operations.Operations) != 2 || operations.Operations[0].ActorUserID != 1 || operations.Operations[0].Note != "Test reversal" {
+	if len(operations.Operations) != 2 || operations.Pagination.Total != 2 || operations.Pagination.TotalPages != 1 || operations.Operations[0].ActorUserID != 1 || operations.Operations[0].Note != "Test reversal" {
 		t.Fatalf("manual balance audit was incomplete: %#v", operations.Operations)
 	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/operations?page=2&page_size=1", nil, http.StatusOK, &operations)
+	if len(operations.Operations) != 1 || operations.Pagination.Page != 2 || operations.Pagination.TotalPages != 2 || operations.Operations[0].Note != "Test credit" {
+		t.Fatalf("wallet operation pagination returned the wrong page: %#v", operations)
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/operations?page=0", nil, http.StatusBadRequest, nil)
+	requestJSON(t, bob, http.MethodGet, spacePath+"/operations?page_size=51", nil, http.StatusBadRequest, nil)
 
 	var bobSpace struct {
 		Space store.Space `json:"space"`
@@ -422,9 +427,10 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 			HandID  int64          `json:"hand_id"`
 			Table   poker.Snapshot `json:"table"`
 		} `json:"hands"`
+		Pagination paginationView `json:"pagination"`
 	}
 	requestJSON(t, alice, http.MethodGet, spacePath+"/hands", nil, http.StatusOK, &handHistory)
-	if len(handHistory.Hands) != 1 || handHistory.Hands[0].TableID != mainTableID || handHistory.Hands[0].HandID != 1 || handHistory.Hands[0].Table.LastResult == nil || len(handHistory.Hands[0].Table.LastResult.Players) != 2 {
+	if handHistory.Pagination.Total != 1 || handHistory.Pagination.TotalPages != 1 || len(handHistory.Hands) != 1 || handHistory.Hands[0].TableID != mainTableID || handHistory.Hands[0].HandID != 1 || handHistory.Hands[0].Table.LastResult == nil || len(handHistory.Hands[0].Table.LastResult.Players) != 2 {
 		t.Fatalf("completed hand history was not returned to Alice: %#v", handHistory.Hands)
 	}
 	requestJSON(t, bob, http.MethodGet, spacePath+"/hands", nil, http.StatusOK, &handHistory)
@@ -456,6 +462,51 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
 	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[1].DisplayName != "Alice" {
 		t.Fatalf("unexpected lobby leaderboard: %#v", leaderboard.Entries)
+	}
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/admin/rankings", nil, http.StatusForbidden, nil)
+	var adminRankings struct {
+		Entries []store.AdminRankingEntry `json:"entries"`
+	}
+	requestJSON(t, alice, http.MethodGet, appServer.URL+"/api/admin/rankings?space_id="+createResult.Space.ID, nil, http.StatusOK, &adminRankings)
+	if len(adminRankings.Entries) != 2 || adminRankings.Entries[0].NetCents != 50 {
+		t.Fatalf("unexpected administrator ranking amounts: %#v", adminRankings.Entries)
+	}
+	requestJSON(t, bob, http.MethodPut, appServer.URL+"/api/admin/rankings/2/amount", map[string]any{
+		"space_id": createResult.Space.ID, "net_cents": 500,
+	}, http.StatusForbidden, nil)
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2/amount", map[string]any{
+		"space_id": createResult.Space.ID, "net_cents": 500,
+	}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
+	if leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[0].NetCents != 500 {
+		t.Fatalf("administrator ranking amount was not applied: %#v", leaderboard.Entries)
+	}
+	var resetRankings struct {
+		ResetUsers int64 `json:"reset_users"`
+	}
+	requestJSON(t, alice, http.MethodPost, appServer.URL+"/api/admin/rankings/reset", map[string]any{
+		"space_id": createResult.Space.ID,
+	}, http.StatusOK, &resetRankings)
+	if resetRankings.ResetUsers != 2 {
+		t.Fatalf("expected two channel rankings to be reset, got %d", resetRankings.ResetUsers)
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].NetCents != 0 || leaderboard.Entries[1].NetCents != 0 {
+		t.Fatalf("channel ranking amounts were not reset: %#v", leaderboard.Entries)
+	}
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/1/amount", map[string]any{
+		"space_id": "", "net_cents": 700,
+	}, http.StatusOK, nil)
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
+	if leaderboard.Entries[0].DisplayName != "Alice" || leaderboard.Entries[0].NetCents != 700 {
+		t.Fatalf("all-channel ranking amount was not applied: %#v", leaderboard.Entries)
+	}
+	requestJSON(t, alice, http.MethodPost, appServer.URL+"/api/admin/rankings/reset", map[string]any{
+		"space_id": "",
+	}, http.StatusOK, &resetRankings)
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].NetCents != 0 || leaderboard.Entries[1].NetCents != 0 {
+		t.Fatalf("all-channel ranking amounts were not reset: %#v", leaderboard.Entries)
 	}
 	requestJSON(t, bob, http.MethodPut, appServer.URL+"/api/admin/rankings/1", map[string]bool{"hidden": true}, http.StatusForbidden, nil)
 	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2", map[string]bool{"hidden": true}, http.StatusOK, nil)
@@ -1102,6 +1153,11 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "operator", "password": "password-2"}, http.StatusOK, nil)
 
 	var publicConfig struct {
+		Branding struct {
+			SiteName   string `json:"site_name"`
+			PageTitle  string `json:"page_title"`
+			FaviconURL string `json:"favicon_url"`
+		} `json:"branding"`
 		LoginHero struct {
 			URL       string  `json:"url"`
 			PositionX float64 `json:"position_x"`
@@ -1110,11 +1166,55 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 		} `json:"login_hero"`
 	}
 	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.Branding.SiteName != store.DefaultSiteName || publicConfig.Branding.PageTitle != store.DefaultPageTitle || publicConfig.Branding.FaviconURL != "" {
+		t.Fatalf("expected default site branding, got %#v", publicConfig.Branding)
+	}
 	if publicConfig.LoginHero.URL != "" || publicConfig.LoginHero.PositionX != 50 || publicConfig.LoginHero.PositionY != 50 || publicConfig.LoginHero.Zoom != 1 {
 		t.Fatalf("expected the default login image placeholder, got %#v", publicConfig.LoginHero)
 	}
+	brandingPath := appServer.URL + "/api/admin/settings/branding"
+	requestJSON(t, operator, http.MethodPut, brandingPath, map[string]string{"site_name": "Nope", "page_title": "Nope"}, http.StatusForbidden, nil)
+	requestJSON(t, admin, http.MethodPut, brandingPath, map[string]string{"site_name": "", "page_title": "Custom"}, http.StatusBadRequest, nil)
+	var updatedBranding struct {
+		Branding struct {
+			SiteName   string `json:"site_name"`
+			PageTitle  string `json:"page_title"`
+			FaviconURL string `json:"favicon_url"`
+		} `json:"branding"`
+	}
+	requestJSON(t, admin, http.MethodPut, brandingPath, map[string]string{"site_name": "牌友节点", "page_title": "牌友节点 · 朋友局"}, http.StatusOK, &updatedBranding)
+	if updatedBranding.Branding.SiteName != "牌友节点" || updatedBranding.Branding.PageTitle != "牌友节点 · 朋友局" {
+		t.Fatalf("site branding was not saved: %#v", updatedBranding.Branding)
+	}
+	requestJSON(t, newTestClient(t), http.MethodGet, appServer.URL+"/api/config", nil, http.StatusOK, &publicConfig)
+	if publicConfig.Branding.SiteName != "牌友节点" || publicConfig.Branding.PageTitle != "牌友节点 · 朋友局" {
+		t.Fatalf("public config did not expose site branding: %#v", publicConfig.Branding)
+	}
 	requestMultipartFile(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.txt", []byte("not an image"), http.StatusUnsupportedMediaType, nil)
 	pngCover := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	requestMultipartFile(t, operator, http.MethodPut, appServer.URL+"/api/admin/settings/favicon", "image", "favicon.png", pngCover, http.StatusForbidden, nil)
+	requestMultipartFile(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/favicon", "image", "favicon.txt", []byte("not an image"), http.StatusUnsupportedMediaType, nil)
+	requestMultipartFile(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/favicon", "image", "favicon.png", pngCover, http.StatusOK, &updatedBranding)
+	if updatedBranding.Branding.FaviconURL == "" {
+		t.Fatal("expected uploaded favicon URL")
+	}
+	faviconResponse, err := http.Get(appServer.URL + updatedBranding.Branding.FaviconURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faviconBody, err := io.ReadAll(faviconResponse.Body)
+	faviconResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faviconResponse.StatusCode != http.StatusOK || faviconResponse.Header.Get("Content-Type") != "image/png" || faviconResponse.Header.Get("X-Content-Type-Options") != "nosniff" || !bytes.Equal(faviconBody, pngCover) {
+		t.Fatalf("unexpected favicon response: status=%d type=%q nosniff=%q body=%v", faviconResponse.StatusCode, faviconResponse.Header.Get("Content-Type"), faviconResponse.Header.Get("X-Content-Type-Options"), faviconBody)
+	}
+	requestJSON(t, operator, http.MethodDelete, appServer.URL+"/api/admin/settings/favicon", nil, http.StatusForbidden, nil)
+	requestJSON(t, admin, http.MethodDelete, appServer.URL+"/api/admin/settings/favicon", nil, http.StatusOK, &updatedBranding)
+	if updatedBranding.Branding.FaviconURL != "" {
+		t.Fatalf("favicon was not reset: %#v", updatedBranding.Branding)
+	}
 	requestMultipartFile(t, operator, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.png", pngCover, http.StatusForbidden, nil)
 	var uploadedCover struct {
 		LoginHero struct {
@@ -1204,6 +1304,9 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "roleadmin", "display_name": "RoleAdmin", "password": "password-6", "role": "role_admin"}, http.StatusCreated, nil)
 	roleAdmin := newTestClient(t)
 	requestJSON(t, roleAdmin, http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "roleadmin", "password": "password-6"}, http.StatusOK, nil)
+	requestJSON(t, roleAdmin, http.MethodPost, appServer.URL+"/api/admin/roles", map[string]any{
+		"key": "elevated_role", "name": "越权角色", "permissions": []string{"roles:manage", "rankings:manage"},
+	}, http.StatusForbidden, nil)
 	requestJSON(t, roleAdmin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "eviladmin", "display_name": "Evil", "password": "password-7", "role": "super_admin"}, http.StatusForbidden, nil)
 	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/1", map[string]string{"password": "hacked-password"}, http.StatusForbidden, nil)
 	requestJSON(t, roleAdmin, http.MethodPatch, appServer.URL+"/api/admin/users/1", map[string]string{"role": "player", "status": "disabled"}, http.StatusForbidden, nil)
@@ -1219,6 +1322,19 @@ func TestRegistrationToggleAndRoleBoundaries(t *testing.T) {
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/login", map[string]any{"username": "admin", "password": "hacked-password"}, http.StatusUnauthorized, nil)
 	// 超级管理员本人仍然可以创建超管账号。
 	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "admin2", "display_name": "Admin2", "password": "password-9", "role": "super_admin"}, http.StatusCreated, nil)
+	// 新增的后台功能可以独立授权，并自动获得后台访问权限。
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/roles", map[string]any{
+		"key": "feature_admin", "name": "功能管理员", "permissions": []string{"rankings:manage", "auth_settings:manage", "branding:manage"},
+	}, http.StatusCreated, nil)
+	requestJSON(t, admin, http.MethodPost, appServer.URL+"/api/admin/users", map[string]any{"username": "featureadmin", "display_name": "FeatureAdmin", "password": "password-10", "role": "feature_admin"}, http.StatusCreated, nil)
+	featureAdmin := newTestClient(t)
+	requestJSON(t, featureAdmin, http.MethodPost, appServer.URL+"/api/admin/auth/login", map[string]any{"username": "featureadmin", "password": "password-10"}, http.StatusOK, nil)
+	requestJSON(t, featureAdmin, http.MethodGet, appServer.URL+"/api/admin/rankings", nil, http.StatusOK, nil)
+	requestJSON(t, featureAdmin, http.MethodPut, appServer.URL+"/api/admin/settings/wechat", map[string]any{
+		"app_id": "", "app_secret": "", "redirect_uri": "", "enabled": false,
+	}, http.StatusOK, nil)
+	requestMultipartFile(t, featureAdmin, http.MethodPut, appServer.URL+"/api/admin/settings/login-hero", "image", "cover.png", pngCover, http.StatusOK, nil)
+	requestJSON(t, featureAdmin, http.MethodDelete, appServer.URL+"/api/admin/settings/login-hero", nil, http.StatusNoContent, nil)
 
 	requestJSON(t, admin, http.MethodPut, appServer.URL+"/api/admin/settings/registration", map[string]bool{"enabled": false}, http.StatusOK, nil)
 	requestJSON(t, newTestClient(t), http.MethodPost, appServer.URL+"/api/auth/register", map[string]any{"username": "blocked", "display_name": "Blocked", "password": "password-4"}, http.StatusForbidden, nil)
@@ -1534,9 +1650,17 @@ func TestChannelManagerCanManageMultipleAssignedChannels(t *testing.T) {
 			"name": "Managed table", "small_blind_cents": 50, "big_blind_cents": 100,
 		}, http.StatusCreated, nil)
 	}
+	var managedMembers struct {
+		Members []store.Member `json:"members"`
+	}
+	requestJSON(t, manager, http.MethodGet, appServer.URL+"/api/spaces/managed-a/members", nil, http.StatusOK, &managedMembers)
+	if len(managedMembers.Members) != 1 || managedMembers.Members[0].UserID != createdManager.User.ID {
+		t.Fatalf("channel manager member scope was not applied: %#v", managedMembers.Members)
+	}
 	requestJSON(t, manager, http.MethodPost, appServer.URL+"/api/spaces/unassigned-c/tables", map[string]any{
 		"name": "Out of scope", "small_blind_cents": 50, "big_blind_cents": 100,
 	}, http.StatusNotFound, nil)
+	requestJSON(t, manager, http.MethodGet, appServer.URL+"/api/spaces/unassigned-c/members", nil, http.StatusNotFound, nil)
 
 	var overview struct {
 		Spaces []store.AdminSpaceSummary `json:"spaces"`

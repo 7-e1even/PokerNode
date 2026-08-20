@@ -8,7 +8,8 @@ import BalanceManager from "./BalanceManager";
 import { Spinner } from "@/components/ui/spinner";
 import { BrandMark } from "@/components/brand-mark";
 import type { AdminSection } from "@/components/app-sidebar";
-import { DEFAULT_LOGIN_HERO_CONFIG, type LoginHeroConfig, type Space, type User } from "./types";
+import { applyDocumentBranding, normalizeBranding } from "./branding";
+import { DEFAULT_BRANDING_CONFIG, DEFAULT_LOGIN_HERO_CONFIG, type BrandingConfig, type LoginHeroConfig, type Space, type User } from "./types";
 
 const AdminAuthScreen = lazy(() => import("./AdminAuthScreen"));
 const AdminDashboard = lazy(() => import("./AdminDashboard"));
@@ -23,6 +24,7 @@ export default function App() {
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [wechatLoginEnabled, setWechatLoginEnabled] = useState(false);
   const [loginHero, setLoginHero] = useState<LoginHeroConfig>(DEFAULT_LOGIN_HERO_CONFIG);
+  const [branding, setBranding] = useState<BrandingConfig>(DEFAULT_BRANDING_CONFIG);
   const [loading, setLoading] = useState(true);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState("");
@@ -37,16 +39,19 @@ export default function App() {
   useEffect(() => {
     Promise.allSettled([
       api<{ user: User }>("/api/me"),
-      api<{ registration_enabled: boolean; wechat_login_enabled: boolean; login_hero: LoginHeroConfig }>("/api/config"),
+      api<{ registration_enabled: boolean; wechat_login_enabled: boolean; login_hero: LoginHeroConfig; branding: BrandingConfig }>("/api/config"),
     ]).then(([session, config]) => {
       setUser(session.status === "fulfilled" ? session.value.user : null);
       if (config.status === "fulfilled") {
         setRegistrationEnabled(config.value.registration_enabled);
         setWechatLoginEnabled(config.value.wechat_login_enabled);
         setLoginHero(config.value.login_hero || DEFAULT_LOGIN_HERO_CONFIG);
+        setBranding(normalizeBranding(config.value.branding));
       }
     }).finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => applyDocumentBranding(branding), [branding]);
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
@@ -96,18 +101,20 @@ export default function App() {
 
   if (route.page === "admin" || route.page === "admin_login") {
     if (!user || !hasPermission(user, "admin:view")) {
-      return <Suspense fallback={<RouteLoading />}><AdminAuthScreen currentUser={user} onBack={() => navigate("/")} onAuthenticated={(nextUser) => { setUser(nextUser); navigate("/admin", true); }} /></Suspense>;
+      return <Suspense fallback={<RouteLoading />}><AdminAuthScreen siteName={branding.site_name} currentUser={user} onBack={() => navigate("/")} onAuthenticated={(nextUser) => { setUser(nextUser); navigate("/admin", true); }} /></Suspense>;
     }
     return (
       <Suspense fallback={<RouteLoading />}>
         <AdminDashboard
           user={user}
+          siteName={branding.site_name}
           section={route.page === "admin" ? route.section : "overview"}
           onSectionChanged={(section) => navigate(adminPath(section))}
           onOpenLobby={() => navigate("/channels")}
           onOpenSettings={() => navigate("/settings")}
           onRegistrationChanged={setRegistrationEnabled}
           onLoginHeroChanged={setLoginHero}
+          onBrandingChanged={setBranding}
           onWeChatLoginChanged={setWechatLoginEnabled}
           onLogout={() => { setUser(null); navigate("/admin/login", true); }}
         />
@@ -115,7 +122,7 @@ export default function App() {
     );
   }
 
-  if (!user) return <AuthScreen registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} loginHero={loginHero} onAuthenticated={setUser} />;
+  if (!user) return <AuthScreen siteName={branding.site_name} registrationEnabled={registrationEnabled} wechatLoginEnabled={wechatLoginEnabled} loginHero={loginHero} onAuthenticated={setUser} />;
 
   if (route.page === "settings") {
     return (
@@ -169,6 +176,7 @@ export default function App() {
   return (
     <Suspense fallback={<RouteLoading />}><Dashboard
       user={user}
+      siteName={branding.site_name}
       view={route.page === "channel_list" ? "channels" : "ranking"}
       onViewChange={(view) => navigate(view === "ranking" ? "/" : "/channels")}
       onOpenBindings={() => navigate("/account/bindings")}

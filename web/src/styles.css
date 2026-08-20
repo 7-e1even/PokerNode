@@ -1166,7 +1166,6 @@
 
   .poker-seat [data-slot="card"],
   .poker-action-pod {
-    border: 1px solid var(--border);
     background: color-mix(in oklch, var(--card) 96%, transparent);
     box-shadow: 0 12px 28px -22px oklch(0.2 0.01 250 / 32%);
   }
@@ -1202,17 +1201,15 @@
   @keyframes poker-acting-seat-breathe {
     0%,
     100% {
-      border-color: color-mix(in oklch, var(--ring) 44%, var(--border));
       box-shadow:
         0 12px 28px -22px oklch(0.2 0.01 250 / 32%),
-        0 0 0 1px color-mix(in oklch, var(--ring) 24%, transparent);
+        0 0 0 2px color-mix(in oklch, var(--ring) 48%, transparent);
     }
 
     50% {
-      border-color: color-mix(in oklch, var(--ring) 82%, var(--border));
       box-shadow:
         0 12px 28px -22px oklch(0.2 0.01 250 / 32%),
-        0 0 0 1px color-mix(in oklch, var(--ring) 58%, transparent);
+        0 0 0 2px color-mix(in oklch, var(--ring) 88%, transparent);
     }
   }
 

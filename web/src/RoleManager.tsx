@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { KeyRound, LockKeyhole, Pencil, Plus, ShieldCheck, Trash2, UsersRound } from "lucide-react";
+import { KeyRound, Pencil, Plus, ShieldCheck, Trash2, UsersRound } from "lucide-react";
 import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { patch, post, remove } from "./api";
 import type { PermissionDefinition, Role } from "./types";
 
-export default function RoleManager({ roles, catalog, onChanged }: {
+export default function RoleManager({ roles, catalog, grantablePermissions, onChanged }: {
   roles: Role[];
   catalog: PermissionDefinition[];
+  grantablePermissions: string[];
   onChanged: (roles: Role[]) => void;
 }) {
   const [creating, setCreating] = useState(false);
@@ -59,26 +61,43 @@ export default function RoleManager({ roles, catalog, onChanged }: {
           {roles.length === 0 ? (
             <Empty className="min-h-56"><EmptyHeader><EmptyMedia variant="icon"><ShieldCheck /></EmptyMedia><EmptyTitle>还没有角色</EmptyTitle><EmptyDescription>创建角色后即可为用户分配权限。</EmptyDescription></EmptyHeader></Empty>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader><TableRow><TableHead>角色</TableHead><TableHead>功能权限</TableHead><TableHead>用户</TableHead><TableHead>类型</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
-                <TableBody>{roles.map((role) => (
-                  <TableRow key={role.key}>
-                    <TableCell><strong className="block">{role.name}</strong><small className="text-muted-foreground">{role.key}</small>{role.description && <p className="mt-1 max-w-72 text-xs text-muted-foreground">{role.description}</p>}</TableCell>
-                    <TableCell><div className="flex max-w-xl flex-wrap gap-1.5">{role.permissions.length ? role.permissions.map((key) => <Badge key={key} variant="outline">{catalog.find((item) => item.key === key)?.name || key}</Badge>) : <span className="text-muted-foreground">无后台功能权限</span>}</div></TableCell>
-                    <TableCell className="tabular-nums">{role.user_count}</TableCell>
-                    <TableCell><Badge variant={role.system ? "secondary" : "outline"}>{role.system ? "系统内置" : "自定义"}</Badge></TableCell>
-                    <TableCell className="text-right"><span className="inline-flex gap-2"><Button size="sm" variant="outline" disabled={role.system} onClick={() => setEditing(role)}><Pencil data-icon="inline-start" />编辑</Button><Button size="icon-sm" variant="ghost" disabled={role.system} aria-label={`删除角色 ${role.name}`} onClick={() => setDeleting(role)}><Trash2 /></Button></span></TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-            </div>
+            <>
+              <div className="hidden overflow-x-auto sm:block">
+                <Table>
+                  <TableHeader><TableRow><TableHead>角色</TableHead><TableHead>功能权限</TableHead><TableHead>用户</TableHead><TableHead>类型</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                  <TableBody>{roles.map((role) => (
+                    <TableRow key={role.key}>
+                      <TableCell><strong className="block">{role.name}</strong><small className="text-muted-foreground">{role.key}</small>{role.description && <p className="mt-1 max-w-72 text-xs text-muted-foreground">{role.description}</p>}</TableCell>
+                      <TableCell><div className="flex max-w-xl flex-wrap gap-1.5">{role.permissions.length ? role.permissions.map((key) => <Badge key={key} variant="outline">{catalog.find((item) => item.key === key)?.name || key}</Badge>) : <span className="text-muted-foreground">无后台功能权限</span>}</div></TableCell>
+                      <TableCell className="tabular-nums">{role.user_count}</TableCell>
+                      <TableCell><Badge variant={role.system ? "secondary" : "outline"}>{role.system ? "系统内置" : "自定义"}</Badge></TableCell>
+                      <TableCell className="text-right"><span className="inline-flex gap-2"><Button size="sm" variant="outline" disabled={role.system} onClick={() => setEditing(role)}><Pencil data-icon="inline-start" />编辑</Button><Button size="icon-sm" variant="ghost" disabled={role.system} aria-label={`删除角色 ${role.name}`} onClick={() => setDeleting(role)}><Trash2 /></Button></span></TableCell>
+                    </TableRow>
+                  ))}</TableBody>
+                </Table>
+              </div>
+              <div className="flex flex-col gap-3 sm:hidden">
+                {roles.map((role) => (
+                  <Card key={role.key}>
+                    <CardHeader>
+                      <CardTitle>{role.name}</CardTitle>
+                      <CardDescription>{role.key}{role.description ? ` · ${role.description}` : ""}</CardDescription>
+                      <CardAction><Badge variant={role.system ? "secondary" : "outline"}>{role.system ? "系统内置" : `${role.user_count} 名用户`}</Badge></CardAction>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-3">
+                      <div className="flex flex-wrap gap-1.5">{role.permissions.length ? role.permissions.map((key) => <Badge key={key} variant="outline">{catalog.find((item) => item.key === key)?.name || key}</Badge>) : <span className="text-sm text-muted-foreground">无后台功能权限</span>}</div>
+                      <div className="flex justify-end gap-2"><Button size="sm" variant="outline" disabled={role.system} onClick={() => setEditing(role)}><Pencil data-icon="inline-start" />编辑</Button><Button size="icon-sm" variant="ghost" disabled={role.system} aria-label={`删除角色 ${role.name}`} onClick={() => setDeleting(role)}><Trash2 /></Button></div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
 
-      {creating && <RoleDialog catalog={catalog} onClose={() => setCreating(false)} onSaved={(role) => { onChanged([...roles, role]); setCreating(false); toast.success("角色已创建"); }} />}
-      {editing && <RoleDialog role={editing} catalog={catalog} onClose={() => setEditing(null)} onSaved={(role) => { onChanged(roles.map((item) => item.key === role.key ? role : item)); setEditing(null); toast.success("角色权限已更新"); }} />}
+      {creating && <RoleDialog catalog={catalog} grantablePermissions={grantablePermissions} onClose={() => setCreating(false)} onSaved={(role) => { onChanged([...roles, role]); setCreating(false); toast.success("角色已创建"); }} />}
+      {editing && <RoleDialog role={editing} catalog={catalog} grantablePermissions={grantablePermissions} onClose={() => setEditing(null)} onSaved={(role) => { onChanged(roles.map((item) => item.key === role.key ? role : item)); setEditing(null); toast.success("角色权限已更新"); }} />}
 
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && !deleteBusy && setDeleting(null)}>
         <AlertDialogContent>
@@ -90,17 +109,21 @@ export default function RoleManager({ roles, catalog, onChanged }: {
   );
 }
 
-function RoleDialog({ role, catalog, onClose, onSaved }: { role?: Role; catalog: PermissionDefinition[]; onClose: () => void; onSaved: (role: Role) => void }) {
+function RoleDialog({ role, catalog, grantablePermissions, onClose, onSaved }: { role?: Role; catalog: PermissionDefinition[]; grantablePermissions: string[]; onClose: () => void; onSaved: (role: Role) => void }) {
   const [key, setKey] = useState(role?.key || "");
   const [name, setName] = useState(role?.name || "");
   const [description, setDescription] = useState(role?.description || "");
-  const [permissions, setPermissions] = useState<string[]>(role?.permissions || []);
+  const [permissions, setPermissions] = useState<string[]>(() => expandPermissionSelection(role?.permissions || [], catalog));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const groups = useMemo(() => Array.from(new Set(catalog.map((permission) => permission.group))), [catalog]);
+  const grantable = useMemo(() => new Set(grantablePermissions), [grantablePermissions]);
+  const ungrantable = permissions.filter((permission) => !grantable.has(permission));
 
   function toggle(permission: string, checked: boolean) {
-    setPermissions((current) => checked ? [...current, permission] : current.filter((item) => item !== permission));
+    setPermissions((current) => checked
+      ? expandPermissionSelection([...current, permission], catalog)
+      : removePermissionAndDependents(current, permission, catalog));
   }
 
   async function submit(event: FormEvent) {
@@ -131,17 +154,52 @@ function RoleDialog({ role, catalog, onClose, onSaved }: { role?: Role; catalog:
               <Field data-disabled={!!role}><FieldLabel htmlFor="role-key">角色标识</FieldLabel><Input id="role-key" value={key} disabled={!!role} onChange={(event) => setKey(event.target.value.toLowerCase())} placeholder="channel_operator" required /><FieldDescription>小写字母、数字或下划线，创建后不可修改。</FieldDescription></Field>
             </div>
             <Field><FieldLabel htmlFor="role-description">角色说明</FieldLabel><Textarea id="role-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明这个角色负责什么" maxLength={200} /></Field>
-            <Field><FieldLabel>功能权限</FieldLabel><FieldDescription>按职责最小化授权；超级管理员始终拥有全部权限。</FieldDescription></Field>
+            <Field><FieldLabel>功能权限</FieldLabel><FieldDescription>按职责最小化授权；依赖权限会自动选中，且只能授予当前账号已拥有的权限。</FieldDescription></Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              {groups.map((group) => <div key={group} className="rounded-xl border p-3"><strong className="mb-3 block text-sm">{group}</strong><FieldGroup className="gap-3">{catalog.filter((item) => item.group === group).map((item) => <Field key={item.key} orientation="horizontal"><FieldContent><FieldTitle>{item.name}</FieldTitle><FieldDescription>{item.description}</FieldDescription></FieldContent><Switch checked={permissions.includes(item.key)} onCheckedChange={(checked) => toggle(item.key, checked)} aria-label={item.name} /></Field>)}</FieldGroup></div>)}
+              {groups.map((group) => <div key={group} className="rounded-xl border p-3"><strong className="mb-3 block text-sm">{group}</strong><FieldGroup className="gap-3">{catalog.filter((item) => item.group === group).map((item) => {
+                const canGrant = grantable.has(item.key);
+                const requiredNames = (item.requires || []).map((key) => catalog.find((candidate) => candidate.key === key)?.name || key);
+                return <Field key={item.key} orientation="horizontal" data-disabled={!canGrant}><FieldContent><FieldTitle>{item.name}{!canGrant && <Badge className="ml-2" variant="outline">不可授予</Badge>}</FieldTitle><FieldDescription>{item.description}{requiredNames.length ? ` · 依赖：${requiredNames.join("、")}` : ""}</FieldDescription></FieldContent><Switch checked={permissions.includes(item.key)} disabled={!canGrant} onCheckedChange={(checked) => toggle(item.key, checked)} aria-label={item.name} /></Field>;
+              })}</FieldGroup></div>)}
             </div>
+            {ungrantable.length > 0 && <Alert><AlertDescription>该角色包含当前账号无权授予的权限，因此不能由当前账号保存。</AlertDescription></Alert>}
             <FieldError>{error}</FieldError>
           </FieldGroup>
-          <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button disabled={busy}>{busy && <Spinner data-icon="inline-start" />}{busy ? "正在保存…" : "保存角色"}</Button></DialogFooter>
+          <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button disabled={busy || ungrantable.length > 0}>{busy && <Spinner data-icon="inline-start" />}{busy ? "正在保存…" : "保存角色"}</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
+}
+
+function expandPermissionSelection(selected: string[], catalog: PermissionDefinition[]) {
+  const result = new Set(selected);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const item of catalog) {
+      if (!result.has(item.key)) continue;
+      for (const required of item.requires || []) {
+        if (result.has(required)) continue;
+        result.add(required);
+        changed = true;
+      }
+    }
+  }
+  return catalog.filter((item) => result.has(item.key)).map((item) => item.key);
+}
+
+function removePermissionAndDependents(selected: string[], removed: string, catalog: PermissionDefinition[]) {
+  const result = new Set(selected);
+  result.delete(removed);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const item of catalog) {
+      if (!result.has(item.key) || (item.requires || []).every((required) => result.has(required))) continue;
+      result.delete(item.key);
+      changed = true;
+    }
+  }
+  return catalog.filter((item) => result.has(item.key)).map((item) => item.key);
 }
 
 function Metric({ icon, label, value, hint }: { icon: React.ReactNode; label: string; value: number; hint: string }) {

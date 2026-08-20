@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Pagination, PaginationContent, PaginationItem, PaginationNext, PaginationPrevious } from "@/components/ui/pagination";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,32 +21,74 @@ interface Props {
   onBack: () => void;
 }
 
+interface PaginationMeta {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+const recordPageSize = 10;
+const emptyPagination: PaginationMeta = { page: 1, page_size: recordPageSize, total: 0, total_pages: 0 };
+
 export default function HistoryPage({ user, space, onBack }: Props) {
   const [hands, setHands] = useState<HandHistory[]>([]);
   const [operations, setOperations] = useState<WalletOperation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [handPage, setHandPage] = useState(1);
+  const [operationPage, setOperationPage] = useState(1);
+  const [handPagination, setHandPagination] = useState<PaginationMeta>(emptyPagination);
+  const [operationPagination, setOperationPagination] = useState<PaginationMeta>(emptyPagination);
+  const [handsLoading, setHandsLoading] = useState(true);
+  const [operationsLoading, setOperationsLoading] = useState(true);
+  const [handsError, setHandsError] = useState("");
+  const [operationsError, setOperationsError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError("");
-    Promise.all([
-      api<{ hands: HandHistory[] }>(`/api/spaces/${space.id}/hands`),
-      api<{ operations: WalletOperation[] }>(`/api/spaces/${space.id}/operations`),
-    ]).then(([handResult, operationResult]) => {
+    setHandsLoading(true);
+    setHandsError("");
+    api<{ hands: HandHistory[]; pagination: PaginationMeta }>(`/api/spaces/${space.id}/hands?page=${handPage}&page_size=${recordPageSize}`).then((result) => {
       if (cancelled) return;
-      setHands(handResult.hands || []);
-      setOperations(operationResult.operations || []);
+      if (result.pagination.total_pages > 0 && handPage > result.pagination.total_pages) {
+        setHandPage(result.pagination.total_pages);
+        return;
+      }
+      setHands(result.hands || []);
+      setHandPagination(result.pagination);
     }).catch((caught) => {
-      if (!cancelled) setError(caught instanceof Error ? caught.message : "读取记录失败");
+      if (!cancelled) setHandsError(caught instanceof Error ? caught.message : "读取牌局记录失败");
     }).finally(() => {
-      if (!cancelled) setLoading(false);
+      if (!cancelled) setHandsLoading(false);
     });
     return () => { cancelled = true; };
+  }, [handPage, space.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setOperationsLoading(true);
+    setOperationsError("");
+    api<{ operations: WalletOperation[]; pagination: PaginationMeta }>(`/api/spaces/${space.id}/operations?page=${operationPage}&page_size=${recordPageSize}`).then((result) => {
+      if (cancelled) return;
+      if (result.pagination.total_pages > 0 && operationPage > result.pagination.total_pages) {
+        setOperationPage(result.pagination.total_pages);
+        return;
+      }
+      setOperations(result.operations || []);
+      setOperationPagination(result.pagination);
+    }).catch((caught) => {
+      if (!cancelled) setOperationsError(caught instanceof Error ? caught.message : "读取资金流水失败");
+    }).finally(() => {
+      if (!cancelled) setOperationsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [operationPage, space.id]);
+
+  useEffect(() => {
+    setHandPage(1);
+    setOperationPage(1);
   }, [space.id]);
 
-  const netFunds = useMemo(() => operations.reduce((total, operation) => total + signedOperationCents(operation), 0), [operations]);
+  const pageNetFunds = useMemo(() => operations.reduce((total, operation) => total + signedOperationCents(operation), 0), [operations]);
 
   return (
     <main className="min-h-svh bg-muted/30">
@@ -55,31 +98,35 @@ export default function HistoryPage({ user, space, onBack }: Props) {
           <BrandMark className="size-9 shrink-0" aria-hidden="true" />
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-heading text-lg font-semibold">牌局与资金记录</h1>
-            <p className="truncate text-sm text-muted-foreground">{space.name} · 最近 50 条个人记录</p>
+            <p className="truncate text-sm text-muted-foreground">{space.name} · 个人记录</p>
           </div>
           <Badge variant="outline">{user.display_name}</Badge>
         </div>
       </header>
 
       <div className="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-6 sm:px-6">
-        {error && <Alert variant="destructive"><AlertTitle>记录读取失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
         <Tabs defaultValue="hands">
           <TabsList>
-            <TabsTrigger value="hands"><History />牌局记录 <Badge variant="secondary">{hands.length}</Badge></TabsTrigger>
-            <TabsTrigger value="funds"><CircleDollarSign />资金流水 <Badge variant="secondary">{operations.length}</Badge></TabsTrigger>
+            <TabsTrigger value="hands"><History />牌局记录 <Badge variant="secondary">{handPagination.total}</Badge></TabsTrigger>
+            <TabsTrigger value="funds"><CircleDollarSign />资金流水 <Badge variant="secondary">{operationPagination.total}</Badge></TabsTrigger>
           </TabsList>
 
           <TabsContent value="hands" className="flex flex-col gap-4 pt-2">
-            {loading ? <HandHistorySkeleton /> : hands.length === 0 ? <HistoryEmpty kind="hands" /> : hands.map((hand) => <HandCard key={`${hand.table_id}-${hand.hand_id}`} hand={hand} viewerID={user.id} />)}
+            {handsError ? <Alert variant="destructive"><AlertTitle>牌局记录读取失败</AlertTitle><AlertDescription>{handsError}</AlertDescription></Alert> : handsLoading ? <HandHistorySkeleton /> : hands.length === 0 ? <HistoryEmpty kind="hands" /> : (
+              <>
+                {hands.map((hand) => <HandCard key={`${hand.table_id}-${hand.hand_id}`} hand={hand} viewerID={user.id} />)}
+                <RecordPagination label="牌局记录" pagination={handPagination} onPageChange={setHandPage} />
+              </>
+            )}
           </TabsContent>
 
           <TabsContent value="funds" className="pt-2">
-            {loading ? <Skeleton className="h-80 w-full" /> : operations.length === 0 ? <HistoryEmpty kind="funds" /> : (
+            {operationsError ? <Alert variant="destructive"><AlertTitle>资金流水读取失败</AlertTitle><AlertDescription>{operationsError}</AlertDescription></Alert> : operationsLoading ? <Skeleton className="h-80 w-full" /> : operations.length === 0 ? <HistoryEmpty kind="funds" /> : (
               <Card>
                 <CardHeader>
                   <CardTitle>资金流水</CardTitle>
                   <CardDescription>买入、离桌结算和管理员调账分开标记；牌桌输赢请以“牌局记录”为准。</CardDescription>
-                  <CardAction><Badge variant="outline">记录净额 {signedMoney(netFunds)}</Badge></CardAction>
+                  <CardAction><Badge variant="outline">本页净额 {signedMoney(pageNetFunds)}</Badge></CardAction>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-col gap-3 md:hidden">{operations.map((operation) => <OperationCard key={operation.id} operation={operation} />)}</div>
@@ -104,12 +151,61 @@ export default function HistoryPage({ user, space, onBack }: Props) {
                     </Table>
                   </div>
                 </CardContent>
+                {operationPagination.total_pages > 1 && <CardFooter><RecordPagination label="资金流水" pagination={operationPagination} onPageChange={setOperationPage} /></CardFooter>}
               </Card>
             )}
           </TabsContent>
         </Tabs>
       </div>
     </main>
+  );
+}
+
+function RecordPagination({ label, pagination, onPageChange }: {
+  label: string;
+  pagination: PaginationMeta;
+  onPageChange: (page: number) => void;
+}) {
+  if (pagination.total_pages <= 1) return null;
+  const previousDisabled = pagination.page <= 1;
+  const nextDisabled = pagination.page >= pagination.total_pages;
+
+  function changePage(page: number) {
+    onPageChange(page);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  return (
+    <div className="flex w-full flex-wrap items-center justify-between gap-3">
+      <span className="text-sm text-muted-foreground">共 {pagination.total} 条</span>
+      <Pagination className="mx-0 w-auto justify-end" aria-label={`${label}分页`}>
+        <PaginationContent>
+          <PaginationItem>
+            <PaginationPrevious
+              href="#"
+              text="上一页"
+              aria-label="上一页"
+              aria-disabled={previousDisabled}
+              tabIndex={previousDisabled ? -1 : undefined}
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              onClick={(event) => { event.preventDefault(); if (!previousDisabled) changePage(pagination.page - 1); }}
+            />
+          </PaginationItem>
+          <PaginationItem><span className="px-2 text-sm tabular-nums text-muted-foreground">第 {pagination.page} / {pagination.total_pages} 页</span></PaginationItem>
+          <PaginationItem>
+            <PaginationNext
+              href="#"
+              text="下一页"
+              aria-label="下一页"
+              aria-disabled={nextDisabled}
+              tabIndex={nextDisabled ? -1 : undefined}
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              onClick={(event) => { event.preventDefault(); if (!nextDisabled) changePage(pagination.page + 1); }}
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+    </div>
   );
 }
 

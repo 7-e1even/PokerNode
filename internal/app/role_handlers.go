@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -28,13 +29,16 @@ func (s *Server) handleAdminRoles(w http.ResponseWriter, r *http.Request, _ stor
 	return nil
 }
 
-func (s *Server) handleAdminCreateRole(w http.ResponseWriter, r *http.Request, _ store.User) error {
+func (s *Server) handleAdminCreateRole(w http.ResponseWriter, r *http.Request, actor store.User) error {
 	var input roleInput
 	if err := decodeJSON(r, &input); err != nil {
 		return err
 	}
 	role, err := validateRoleInput(input, true)
 	if err != nil {
+		return err
+	}
+	if err := s.validateGrantableRole(r.Context(), actor, role); err != nil {
 		return err
 	}
 	created, err := s.store.CreateRole(r.Context(), role)
@@ -48,7 +52,7 @@ func (s *Server) handleAdminCreateRole(w http.ResponseWriter, r *http.Request, _
 	return nil
 }
 
-func (s *Server) handleAdminUpdateRole(w http.ResponseWriter, r *http.Request, _ store.User) error {
+func (s *Server) handleAdminUpdateRole(w http.ResponseWriter, r *http.Request, actor store.User) error {
 	key := strings.TrimSpace(r.PathValue("roleKey"))
 	if !roleKeyPattern.MatchString(key) {
 		return &apiError{Status: http.StatusBadRequest, Message: "角色标识无效"}
@@ -60,6 +64,9 @@ func (s *Server) handleAdminUpdateRole(w http.ResponseWriter, r *http.Request, _
 	input.Key = key
 	role, err := validateRoleInput(input, false)
 	if err != nil {
+		return err
+	}
+	if err := s.validateGrantableRole(r.Context(), actor, role); err != nil {
 		return err
 	}
 	updated, err := s.store.UpdateRole(r.Context(), key, role.Name, role.Description, role.Permissions)
@@ -102,7 +109,7 @@ func validateRoleInput(input roleInput, requireKey bool) (store.Role, error) {
 	if len([]rune(input.Description)) > 200 {
 		return store.Role{}, &apiError{Status: http.StatusBadRequest, Message: "角色说明不能超过 200 个字符"}
 	}
-	permissions := make([]string, 0, len(input.Permissions))
+	permissions := make([]access.Permission, 0, len(input.Permissions))
 	seen := make(map[string]struct{}, len(input.Permissions))
 	for _, permission := range input.Permissions {
 		permission = strings.TrimSpace(permission)
@@ -113,7 +120,36 @@ func validateRoleInput(input roleInput, requireKey bool) (store.Role, error) {
 			continue
 		}
 		seen[permission] = struct{}{}
-		permissions = append(permissions, permission)
+		permissions = append(permissions, access.Permission(permission))
 	}
-	return store.Role{Key: input.Key, Name: input.Name, Description: input.Description, Permissions: permissions}, nil
+	expanded := access.ExpandPermissions(permissions)
+	storedPermissions := make([]string, 0, len(expanded))
+	for _, permission := range expanded {
+		storedPermissions = append(storedPermissions, string(permission))
+	}
+	return store.Role{Key: input.Key, Name: input.Name, Description: input.Description, Permissions: storedPermissions}, nil
+}
+
+func (s *Server) validateGrantableRole(ctx context.Context, actor store.User, role store.Role) error {
+	granted, err := s.permissionsForUser(ctx, actor)
+	if err != nil {
+		return err
+	}
+	return validateGrantablePermissions(actor.Role, granted, role.Permissions)
+}
+
+func validateGrantablePermissions(actorRole string, granted []access.Permission, requested []string) error {
+	if actorRole == string(access.RoleSuperAdmin) {
+		return nil
+	}
+	grantable := make(map[string]struct{}, len(granted))
+	for _, permission := range granted {
+		grantable[string(permission)] = struct{}{}
+	}
+	for _, permission := range requested {
+		if _, ok := grantable[permission]; !ok {
+			return &apiError{Status: http.StatusForbidden, Message: "不能授予当前账号未拥有的权限"}
+		}
+	}
+	return nil
 }

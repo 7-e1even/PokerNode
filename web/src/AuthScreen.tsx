@@ -2,11 +2,13 @@ import { LoginForm } from "@/components/login-form"
 import type { LoginHeroConfig, User } from "@/types"
 
 export default function AuthScreen({
+  siteName,
   registrationEnabled,
   wechatLoginEnabled,
   loginHero,
   onAuthenticated,
 }: {
+  siteName: string
   registrationEnabled: boolean
   wechatLoginEnabled: boolean
   loginHero: LoginHeroConfig
@@ -16,6 +18,7 @@ export default function AuthScreen({
     <main className="flex min-h-svh flex-col items-center justify-center bg-muted p-6 md:p-10">
       <div className="w-full max-w-sm md:max-w-5xl">
         <LoginForm
+          siteName={siteName}
           registrationEnabled={registrationEnabled}
           wechatLoginEnabled={wechatLoginEnabled}
           loginHero={loginHero}

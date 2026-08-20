@@ -15,7 +15,10 @@ import (
 	"pokernode/internal/store"
 )
 
-const maxLoginHeroImageBytes = 5 << 20
+const (
+	maxLoginHeroImageBytes = 5 << 20
+	maxSiteFaviconBytes    = 1 << 20
+)
 
 type adminUserInput struct {
 	Username        string   `json:"username"`
@@ -38,10 +41,24 @@ type adminRankingVisibilityInput struct {
 	Hidden bool `json:"hidden"`
 }
 
+type adminRankingAmountInput struct {
+	SpaceID  string `json:"space_id"`
+	NetCents int64  `json:"net_cents"`
+}
+
+type adminRankingResetInput struct {
+	SpaceID string `json:"space_id"`
+}
+
 type adminLoginHeroPlacementInput struct {
 	PositionX float64 `json:"position_x"`
 	PositionY float64 `json:"position_y"`
 	Zoom      float64 `json:"zoom"`
+}
+
+type adminSiteBrandingInput struct {
+	SiteName  string `json:"site_name"`
+	PageTitle string `json:"page_title"`
 }
 
 type adminWeChatSettingsInput struct {
@@ -89,6 +106,10 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 	if err != nil {
 		return err
 	}
+	branding, err := s.store.SiteBranding(r.Context())
+	if err != nil {
+		return err
+	}
 	wechatSettings, err := s.adminWeChatSettings(r.Context())
 	if err != nil {
 		return err
@@ -125,6 +146,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 		"platform_counts":      platformCounts,
 		"registration_enabled": registrationEnabled,
 		"login_hero":           loginHeroImagePayload(loginHeroConfig),
+		"branding":             siteBrandingPayload(branding),
 		"wechat_login":         wechatSettings,
 		"permissions":          permissions,
 		"roles":                roles,
@@ -133,10 +155,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request, act
 	return nil
 }
 
-func (s *Server) handleAdminRankingVisibility(w http.ResponseWriter, r *http.Request, actor store.User) error {
-	if actor.Role != string(access.RoleSuperAdmin) {
-		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以管理排名展示"}
-	}
+func (s *Server) handleAdminRankingVisibility(w http.ResponseWriter, r *http.Request, _ store.User) error {
 	userID, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
 	if err != nil || userID <= 0 {
 		return &apiError{Status: http.StatusBadRequest, Message: "用户 ID 无效"}
@@ -162,6 +181,67 @@ func (s *Server) handleAdminRankingVisibility(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 	return nil
+}
+
+func (s *Server) handleAdminRankings(w http.ResponseWriter, r *http.Request, _ store.User) error {
+	spaceID := strings.TrimSpace(r.URL.Query().Get("space_id"))
+	if err := s.validateAdminRankingSpace(r.Context(), spaceID); err != nil {
+		return err
+	}
+	entries, err := s.store.AdminLeaderboard(r.Context(), spaceID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "space_id": spaceID})
+	return nil
+}
+
+func (s *Server) handleAdminRankingAmount(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	userID, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
+	if err != nil || userID <= 0 {
+		return &apiError{Status: http.StatusBadRequest, Message: "用户 ID 无效"}
+	}
+	var input adminRankingAmountInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.SpaceID = strings.TrimSpace(input.SpaceID)
+	if err := s.validateAdminRankingSpace(r.Context(), input.SpaceID); err != nil {
+		return err
+	}
+	if err := s.store.SetRankingNetCents(r.Context(), input.SpaceID, userID, input.NetCents, actor.ID); err != nil {
+		if errors.Is(err, store.ErrRankingAdjustmentRange) {
+			return &apiError{Status: http.StatusBadRequest, Message: "排行榜金额过大，无法保存"}
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
+	return nil
+}
+
+func (s *Server) handleAdminRankingReset(w http.ResponseWriter, r *http.Request, actor store.User) error {
+	var input adminRankingResetInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.SpaceID = strings.TrimSpace(input.SpaceID)
+	if err := s.validateAdminRankingSpace(r.Context(), input.SpaceID); err != nil {
+		return err
+	}
+	count, err := s.store.ResetRankingNetCents(r.Context(), input.SpaceID, actor.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reset_users": count})
+	return nil
+}
+
+func (s *Server) validateAdminRankingSpace(ctx context.Context, spaceID string) error {
+	if spaceID == "" {
+		return nil
+	}
+	_, err := s.store.SpaceByID(ctx, spaceID)
+	return err
 }
 
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, actor store.User) error {
@@ -507,6 +587,78 @@ func (s *Server) handleAdminRegistration(w http.ResponseWriter, r *http.Request,
 	return nil
 }
 
+func (s *Server) handleAdminSiteBranding(w http.ResponseWriter, r *http.Request, _ store.User) error {
+	var input adminSiteBrandingInput
+	if err := decodeJSON(r, &input); err != nil {
+		return err
+	}
+	input.SiteName = strings.TrimSpace(input.SiteName)
+	input.PageTitle = strings.TrimSpace(input.PageTitle)
+	if input.SiteName == "" || len([]rune(input.SiteName)) > 32 || strings.ContainsAny(input.SiteName, "\r\n\t") {
+		return &apiError{Status: http.StatusBadRequest, Message: "站点名称需为 1–32 个字符"}
+	}
+	if input.PageTitle == "" || len([]rune(input.PageTitle)) > 80 || strings.ContainsAny(input.PageTitle, "\r\n\t") {
+		return &apiError{Status: http.StatusBadRequest, Message: "浏览器标题需为 1–80 个字符"}
+	}
+	branding, err := s.store.SetSiteBranding(r.Context(), input.SiteName, input.PageTitle)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branding": siteBrandingPayload(branding)})
+	return nil
+}
+
+func (s *Server) handleAdminSiteFavicon(w http.ResponseWriter, r *http.Request, _ store.User) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSiteFaviconBytes+(1<<20))
+	if err := r.ParseMultipartForm(maxSiteFaviconBytes); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "站点图标不能超过 1 MB"}
+		}
+		return &apiError{Status: http.StatusBadRequest, Message: "站点图标上传格式无效"}
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		return &apiError{Status: http.StatusBadRequest, Message: "请选择要上传的站点图标"}
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxSiteFaviconBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxSiteFaviconBytes {
+		return &apiError{Status: http.StatusRequestEntityTooLarge, Message: "站点图标不能超过 1 MB"}
+	}
+	contentType := http.DetectContentType(data)
+	if contentType != "image/png" && contentType != "image/jpeg" && contentType != "image/webp" {
+		return &apiError{Status: http.StatusUnsupportedMediaType, Message: "站点图标仅支持 PNG、JPEG 或 WebP"}
+	}
+	if _, err := s.store.SetSiteFavicon(r.Context(), contentType, data); err != nil {
+		return err
+	}
+	branding, err := s.store.SiteBranding(r.Context())
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branding": siteBrandingPayload(branding)})
+	return nil
+}
+
+func (s *Server) handleAdminDeleteSiteFavicon(w http.ResponseWriter, r *http.Request, _ store.User) error {
+	if err := s.store.DeleteSiteFavicon(r.Context()); err != nil {
+		return err
+	}
+	branding, err := s.store.SiteBranding(r.Context())
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branding": siteBrandingPayload(branding)})
+	return nil
+}
+
 func (s *Server) adminWeChatSettings(ctx context.Context) (adminWeChatSettingsView, error) {
 	settings, err := s.store.WeChatSettings(ctx)
 	if err == nil {
@@ -531,10 +683,7 @@ func (s *Server) adminWeChatSettings(ctx context.Context) (adminWeChatSettingsVi
 	}, nil
 }
 
-func (s *Server) handleAdminWeChatSettings(w http.ResponseWriter, r *http.Request, actor store.User) error {
-	if actor.Role != string(access.RoleSuperAdmin) {
-		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改微信登录配置"}
-	}
+func (s *Server) handleAdminWeChatSettings(w http.ResponseWriter, r *http.Request, _ store.User) error {
 	var input adminWeChatSettingsInput
 	if err := decodeJSON(r, &input); err != nil {
 		return err
@@ -580,10 +729,7 @@ func (s *Server) handleAdminWeChatSettings(w http.ResponseWriter, r *http.Reques
 	return nil
 }
 
-func (s *Server) handleAdminLoginHeroImage(w http.ResponseWriter, r *http.Request, actor store.User) error {
-	if actor.Role != string(access.RoleSuperAdmin) {
-		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
-	}
+func (s *Server) handleAdminLoginHeroImage(w http.ResponseWriter, r *http.Request, _ store.User) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxLoginHeroImageBytes+(1<<20))
 	if err := r.ParseMultipartForm(maxLoginHeroImageBytes); err != nil {
 		var tooLarge *http.MaxBytesError
@@ -619,10 +765,7 @@ func (s *Server) handleAdminLoginHeroImage(w http.ResponseWriter, r *http.Reques
 	return nil
 }
 
-func (s *Server) handleAdminUpdateLoginHeroPlacement(w http.ResponseWriter, r *http.Request, actor store.User) error {
-	if actor.Role != string(access.RoleSuperAdmin) {
-		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
-	}
+func (s *Server) handleAdminUpdateLoginHeroPlacement(w http.ResponseWriter, r *http.Request, _ store.User) error {
 	var input adminLoginHeroPlacementInput
 	if err := decodeJSON(r, &input); err != nil {
 		return err
@@ -638,10 +781,7 @@ func (s *Server) handleAdminUpdateLoginHeroPlacement(w http.ResponseWriter, r *h
 	return nil
 }
 
-func (s *Server) handleAdminDeleteLoginHeroImage(w http.ResponseWriter, r *http.Request, actor store.User) error {
-	if actor.Role != string(access.RoleSuperAdmin) {
-		return &apiError{Status: http.StatusForbidden, Message: "只有超级管理员可以修改登录页宣传图"}
-	}
+func (s *Server) handleAdminDeleteLoginHeroImage(w http.ResponseWriter, r *http.Request, _ store.User) error {
 	if err := s.store.DeleteLoginHeroImage(r.Context()); err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,18 @@ type spaceInput struct {
 
 type bindInput struct {
 	Token string `json:"token"`
+}
+
+const (
+	defaultRecordPageSize = 10
+	maxRecordPageSize     = 50
+)
+
+type paginationView struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"page_size"`
+	Total      int `json:"total"`
+	TotalPages int `json:"total_pages"`
 }
 
 type accountBindingView struct {
@@ -155,6 +168,22 @@ func (s *Server) handleGetSpace(w http.ResponseWriter, r *http.Request, user sto
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"space": space, "membership": member})
+	return nil
+}
+
+func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request, user store.User) error {
+	space, err := s.spaceForActor(r.Context(), r.PathValue("spaceID"), user)
+	if err != nil {
+		return err
+	}
+	if !space.CanManage {
+		return &apiError{Status: http.StatusForbidden, Message: "只有频道管理员可以查看成员"}
+	}
+	members, err := s.store.Members(r.Context(), space.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": members})
 	return nil
 }
 
@@ -300,11 +329,15 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request, user s
 	if err != nil {
 		return err
 	}
-	operations, err := s.store.WalletOperations(r.Context(), space.ID, user.ID)
+	page, pageSize, err := recordPagination(r)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"operations": operations})
+	operations, total, err := s.store.WalletOperations(r.Context(), space.ID, user.ID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"operations": operations, "pagination": newPaginationView(page, pageSize, total)})
 	return nil
 }
 
@@ -313,7 +346,11 @@ func (s *Server) handleHandHistories(w http.ResponseWriter, r *http.Request, use
 	if err != nil {
 		return err
 	}
-	histories, err := s.store.HandHistories(r.Context(), space.ID, user.ID)
+	page, pageSize, err := recordPagination(r)
+	if err != nil {
+		return err
+	}
+	histories, total, err := s.store.HandHistories(r.Context(), space.ID, user.ID, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return err
 	}
@@ -335,8 +372,39 @@ func (s *Server) handleHandHistories(w http.ResponseWriter, r *http.Request, use
 			CompletedAt: history.CompletedAt, Table: snapshot,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hands": views})
+	writeJSON(w, http.StatusOK, map[string]any{"hands": views, "pagination": newPaginationView(page, pageSize, total)})
 	return nil
+}
+
+func recordPagination(r *http.Request) (int, int, error) {
+	parse := func(name string, fallback, maximum int) (int, error) {
+		raw := strings.TrimSpace(r.URL.Query().Get(name))
+		if raw == "" {
+			return fallback, nil
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > maximum {
+			return 0, &apiError{Status: http.StatusBadRequest, Message: "分页参数不正确"}
+		}
+		return value, nil
+	}
+	page, err := parse("page", 1, 1_000_000)
+	if err != nil {
+		return 0, 0, err
+	}
+	pageSize, err := parse("page_size", defaultRecordPageSize, maxRecordPageSize)
+	if err != nil {
+		return 0, 0, err
+	}
+	return page, pageSize, nil
+}
+
+func newPaginationView(page, pageSize, total int) paginationView {
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	return paginationView{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages}
 }
 
 func (s *Server) handleChannelLeaderboard(w http.ResponseWriter, r *http.Request, user store.User) error {

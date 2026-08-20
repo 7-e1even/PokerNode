@@ -154,11 +154,11 @@ func TestUserDeletionGuards(t *testing.T) {
 	if space.OwnerUserID != admin.ID {
 		t.Fatalf("channel ownership was not transferred: %#v", space)
 	}
-	operations, err := database.WalletOperations(ctx, "space-1", owner.ID)
+	operations, totalOperations, err := database.WalletOperations(ctx, "space-1", owner.ID, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(operations) != 1 || operations[0].ID != "audit-1" {
+	if totalOperations != 1 || len(operations) != 1 || operations[0].ID != "audit-1" {
 		t.Fatalf("wallet audit was not retained: %#v", operations)
 	}
 	users, err := database.Users(ctx)
@@ -211,19 +211,114 @@ func TestHandHistoryIsStoredOnceAlongsideLatestTableState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	histories, err := database.HandHistories(ctx, space.ID, player.ID)
+	histories, totalHistories, err := database.HandHistories(ctx, space.ID, player.ID, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(histories) != 1 || string(histories[0].Snapshot) != `{"hand_id":29,"winner":"l4zily"}` {
+	if totalHistories != 1 || len(histories) != 1 || string(histories[0].Snapshot) != `{"hand_id":29,"winner":"l4zily"}` {
 		t.Fatalf("completed hand should remain immutable: %#v", histories)
+	}
+	newerHistory := HandHistory{
+		HandID: 30, UserID: player.ID, GameType: "texas_holdem",
+		Snapshot: []byte(`{"hand_id":30,"winner":"player"}`), CompletedAt: "2026-08-20T11:53:00Z",
+	}
+	if err := database.SaveTableStateWithHandHistories(ctx, space.ID, "table-1", []byte(`{"hand_id":31}`), []HandHistory{newerHistory}); err != nil {
+		t.Fatal(err)
+	}
+	newest, totalHistories, err := database.HandHistories(ctx, space.ID, player.ID, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, olderTotal, err := database.HandHistories(ctx, space.ID, player.ID, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totalHistories != 2 || olderTotal != 2 || len(newest) != 1 || newest[0].HandID != 30 || len(older) != 1 || older[0].HandID != 29 || string(older[0].Snapshot) != `{"hand_id":29,"winner":"l4zily"}` {
+		t.Fatalf("hand history pagination returned the wrong records: newest=%#v older=%#v totals=%d/%d", newest, older, totalHistories, olderTotal)
 	}
 	state, err := database.LoadTableState(ctx, space.ID, "table-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(state) != `{"hand_id":30}` {
+	if string(state) != `{"hand_id":31}` {
 		t.Fatalf("latest table state was not updated: %s", state)
+	}
+}
+
+func TestRankingAmountsCanBeAdjustedAndResetWithoutChangingWalletHistory(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t)
+
+	admin, err := database.CreateUser(ctx, "ranking-admin", "Ranking Admin", "hash", "super_admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	space := Space{
+		ID: "ranking-space", Name: "Ranking Space", InviteCode: "RANKING1", OwnerUserID: admin.ID,
+		BaseURL: "http://example.test", AdminTokenEnc: "encrypted", AdminTokenLast4: "last",
+		AdminNewAPIUserID: 1, AdminNewAPIRole: 100, QuotaPerUSD: 500000, CreatedAt: "2026-08-20T00:00:00Z",
+	}
+	if err := database.CreateSpace(ctx, space); err != nil {
+		t.Fatal(err)
+	}
+	addOperation := func(id, kind string, cents int64) {
+		t.Helper()
+		if err := database.CreateWalletOperation(ctx, WalletOperation{
+			ID: id, SpaceID: space.ID, UserID: admin.ID, NewAPIUserID: 1,
+			Kind: kind, Cents: cents, Quota: cents * 5000, Status: "completed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addOperation("ranking-buy-in", "buy_in", 100)
+	addOperation("ranking-cash-out", "cash_out", 150)
+
+	if err := database.SetRankingNetCents(ctx, space.ID, admin.ID, 500, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || len(entries) != 1 || entries[0].NetCents != 500 {
+		t.Fatalf("channel ranking adjustment was not applied: entries=%#v err=%v", entries, err)
+	}
+	addOperation("ranking-later-win", "cash_out", 25)
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != 525 {
+		t.Fatalf("later settlements should continue from the adjusted amount: entries=%#v err=%v", entries, err)
+	}
+	resetUsers, err := database.ResetRankingNetCents(ctx, space.ID, admin.ID)
+	if err != nil || resetUsers != 1 {
+		t.Fatalf("channel reset returned users=%d err=%v", resetUsers, err)
+	}
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != 0 {
+		t.Fatalf("channel ranking was not reset: entries=%#v err=%v", entries, err)
+	}
+	addOperation("ranking-after-reset", "cash_out", 10)
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != 10 {
+		t.Fatalf("settlements after reset should start accumulating again: entries=%#v err=%v", entries, err)
+	}
+	if err := database.SetRankingNetCents(ctx, "", admin.ID, 1_000, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	lobbyEntries, err := database.LobbyLeaderboard(ctx, admin.ID)
+	if err != nil || len(lobbyEntries) != 1 || lobbyEntries[0].NetCents != 1_000 {
+		t.Fatalf("all-channel ranking adjustment was not applied: entries=%#v err=%v", lobbyEntries, err)
+	}
+	if _, err := database.ResetRankingNetCents(ctx, "", admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	lobbyEntries, err = database.LobbyLeaderboard(ctx, admin.ID)
+	if err != nil || lobbyEntries[0].NetCents != 0 {
+		t.Fatalf("all-channel ranking was not reset: entries=%#v err=%v", lobbyEntries, err)
+	}
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != 10 {
+		t.Fatalf("all-channel reset should not rewrite channel ranking: entries=%#v err=%v", entries, err)
+	}
+	operations, total, err := database.WalletOperations(ctx, space.ID, admin.ID, 10, 0)
+	if err != nil || total != 4 || len(operations) != 4 {
+		t.Fatalf("ranking controls changed wallet history: total=%d operations=%#v err=%v", total, operations, err)
 	}
 }
 

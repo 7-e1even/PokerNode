@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils"
 import type { LoginHeroConfig, User } from "@/types"
 
 interface LoginFormProps extends Omit<ComponentProps<"div">, "onSubmit"> {
+  siteName: string
   registrationEnabled: boolean
   wechatLoginEnabled: boolean
   loginHero: LoginHeroConfig
@@ -37,6 +38,7 @@ interface LoginProvider {
 
 export function LoginForm({
   className,
+  siteName,
   registrationEnabled,
   wechatLoginEnabled,
   loginHero,
@@ -113,7 +115,7 @@ export function LoginForm({
                   {mode === "login" ? "欢迎回来" : "创建牌手账号"}
                 </h1>
                 <p className="text-balance text-muted-foreground">
-                  {mode === "login" ? "登录你的 PokerNode 账号" : "创建账号后将自动登录"}
+                  {mode === "login" ? `登录你的 ${siteName} 账号` : "创建账号后将自动登录"}
                 </p>
               </div>
 

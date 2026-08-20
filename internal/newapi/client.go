@@ -235,15 +235,26 @@ func messageError(message string) error {
 }
 
 func CentsToQuota(cents, quotaPerUSD int64) (int64, error) {
-	if cents <= 0 || quotaPerUSD <= 0 {
+	if cents <= 0 {
+		return 0, errors.New("amount and quota conversion must be positive")
+	}
+	maxCents, err := MaxCentsForQuota(quotaPerUSD)
+	if err != nil {
+		return 0, err
+	}
+	if cents > maxCents {
+		return 0, errors.New("quota conversion is too large")
+	}
+	return cents * (quotaPerUSD / 100), nil
+}
+
+func MaxCentsForQuota(quotaPerUSD int64) (int64, error) {
+	if quotaPerUSD <= 0 {
 		return 0, errors.New("amount and quota conversion must be positive")
 	}
 	if quotaPerUSD%100 != 0 {
 		return 0, errors.New("quota_per_usd must be divisible by 100")
 	}
 	perCent := quotaPerUSD / 100
-	if cents > math.MaxInt64/perCent {
-		return 0, errors.New("quota conversion is too large")
-	}
-	return cents * perCent, nil
+	return math.MaxInt64 / perCent, nil
 }

@@ -5,13 +5,17 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"pokernode/internal/access"
 )
 
 var (
@@ -25,9 +29,14 @@ var (
 	ErrExternalIdentityBound   = errors.New("external identity is bound to another user")
 	ErrExternalIdentitySet     = errors.New("user already has an external identity for this provider")
 	ErrActiveTableSeat         = errors.New("user already has an active table seat")
+	ErrRankingAdjustmentRange  = errors.New("ranking adjustment is out of range")
 )
 
-const externalLoginPasswordHash = "!external-login"
+const (
+	externalLoginPasswordHash = "!external-login"
+	DefaultSiteName           = "PokerNode"
+	DefaultPageTitle          = "PokerNode"
+)
 
 type Store struct {
 	db *sql.DB
@@ -65,6 +74,12 @@ type LoginHeroImageConfig struct {
 	PositionX float64
 	PositionY float64
 	Zoom      float64
+}
+
+type SiteBranding struct {
+	SiteName         string `json:"site_name"`
+	PageTitle        string `json:"page_title"`
+	FaviconUpdatedAt string `json:"-"`
 }
 
 type WeChatSettings struct {
@@ -172,14 +187,13 @@ type ChannelLeaderboardEntry struct {
 	Sessions    int    `json:"sessions"`
 }
 
-type SpaceMessage struct {
-	ID          int64  `json:"id"`
-	SpaceID     string `json:"space_id"`
-	UserID      int64  `json:"user_id"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
-	Body        string `json:"body"`
-	CreatedAt   string `json:"created_at"`
+type AdminRankingEntry struct {
+	UserID        int64  `json:"user_id"`
+	DisplayName   string `json:"display_name"`
+	AvatarURL     string `json:"avatar_url,omitempty"`
+	NetCents      int64  `json:"net_cents"`
+	Sessions      int    `json:"sessions"`
+	RankingHidden bool   `json:"ranking_hidden"`
 }
 
 type AdminSpaceSummary struct {
@@ -329,14 +343,6 @@ CREATE TABLE IF NOT EXISTS space_managers (
   PRIMARY KEY (space_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS space_managers_user_idx ON space_managers(user_id, space_id);
-CREATE TABLE IF NOT EXISTS space_messages (
-  id BIGSERIAL PRIMARY KEY,
-  space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS space_messages_space_idx ON space_messages(space_id, id DESC);
 CREATE TABLE IF NOT EXISTS wallet_operations (
   id TEXT PRIMARY KEY,
   space_id TEXT NOT NULL REFERENCES spaces(id),
@@ -354,6 +360,14 @@ CREATE TABLE IF NOT EXISTS wallet_operations (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS wallet_operations_user_idx ON wallet_operations(space_id, user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS ranking_adjustments (
+  scope_space_id TEXT NOT NULL,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  cents BIGINT NOT NULL,
+  actor_user_id BIGINT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (scope_space_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS table_states (
   space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
   table_id TEXT NOT NULL,
@@ -424,14 +438,21 @@ CREATE INDEX IF NOT EXISTS active_table_seats_table_idx ON active_table_seats(sp
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	superAdminPermissions, err := json.Marshal(access.AllPermissions())
+	if err != nil {
+		return fmt.Errorf("encode super administrator permissions: %w", err)
+	}
 	if _, err := s.db.Exec(`INSERT INTO app_settings(key,value,updated_at) VALUES('registration_enabled','true',$1) ON CONFLICT(key) DO NOTHING`, now); err != nil {
 		return fmt.Errorf("initialize settings: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO app_settings(key,value,updated_at) VALUES('site_name',$1,$3),('page_title',$2,$3) ON CONFLICT(key) DO NOTHING`, DefaultSiteName, DefaultPageTitle, now); err != nil {
+		return fmt.Errorf("initialize branding settings: %w", err)
 	}
 	defaultRoles := []struct {
 		key, name, description, permissions string
 		system                              bool
 	}{
-		{"super_admin", "超级管理员", "拥有平台和全部频道的所有权限", `["admin:view","users:read","users:manage","channels:manage","balances:manage","roles:manage","registration:manage"]`, true},
+		{"super_admin", "超级管理员", "拥有平台和全部频道的所有权限", string(superAdminPermissions), true},
 		{"operator", "运营", "管理玩家账号并处理已分配频道的成员余额", `["admin:view","users:read","users:manage","balances:manage"]`, false},
 		{"channel_manager", "频道管理员", "管理分配给自己的一个或多个频道", `["admin:view","channels:manage","balances:manage"]`, false},
 		{"player", "玩家", "进入频道并参与牌局", `[]`, false},
@@ -456,6 +477,9 @@ CREATE INDEX IF NOT EXISTS active_table_seats_table_idx ON active_table_seats(sp
 	}
 	if _, err := s.db.Exec(`UPDATE roles SET system=(key='super_admin')`); err != nil {
 		return fmt.Errorf("normalize system roles: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE roles SET permissions_json=$1,updated_at=$2 WHERE key='super_admin' AND permissions_json<>$1`, string(superAdminPermissions), now); err != nil {
+		return fmt.Errorf("normalize super administrator permissions: %w", err)
 	}
 	if _, err := s.db.Exec(`UPDATE users SET role='super_admin' WHERE id=(SELECT MIN(id) FROM users) AND NOT EXISTS(SELECT 1 FROM users WHERE role='super_admin')`); err != nil {
 		return fmt.Errorf("bootstrap administrator: %w", err)
@@ -1102,6 +1126,76 @@ func (s *Store) SetRegistrationEnabled(ctx context.Context, enabled bool) error 
 	return err
 }
 
+func (s *Store) SiteBranding(ctx context.Context) (SiteBranding, error) {
+	branding := SiteBranding{SiteName: DefaultSiteName, PageTitle: DefaultPageTitle}
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM app_settings WHERE key IN ('site_name','page_title')`)
+	if err != nil {
+		return SiteBranding{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return SiteBranding{}, err
+		}
+		switch key {
+		case "site_name":
+			branding.SiteName = value
+		case "page_title":
+			branding.PageTitle = value
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return SiteBranding{}, err
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT updated_at FROM app_assets WHERE key='site_favicon'`).Scan(&branding.FaviconUpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return branding, err
+}
+
+func (s *Store) SetSiteBranding(ctx context.Context, siteName, pageTitle string) (SiteBranding, error) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SiteBranding{}, err
+	}
+	defer tx.Rollback()
+	for key, value := range map[string]string{"site_name": siteName, "page_title": pageTitle} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES($1,$2,$3) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at`, key, value, updatedAt); err != nil {
+			return SiteBranding{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return SiteBranding{}, err
+	}
+	return s.SiteBranding(ctx)
+}
+
+func (s *Store) SiteFavicon(ctx context.Context) (AppAsset, error) {
+	var asset AppAsset
+	err := s.db.QueryRowContext(ctx, `SELECT content_type,data,updated_at FROM app_assets WHERE key='site_favicon'`).Scan(&asset.ContentType, &asset.Data, &asset.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AppAsset{}, ErrNotFound
+	}
+	return asset, err
+}
+
+func (s *Store) SetSiteFavicon(ctx context.Context, contentType string, data []byte) (string, error) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO app_assets(key,content_type,data,position_x,position_y,zoom,updated_at)
+VALUES('site_favicon',$1,$2,50,50,1,$3)
+ON CONFLICT(key) DO UPDATE SET content_type=EXCLUDED.content_type,data=EXCLUDED.data,updated_at=EXCLUDED.updated_at`, contentType, data, updatedAt)
+	return updatedAt, err
+}
+
+func (s *Store) DeleteSiteFavicon(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_assets WHERE key='site_favicon'`)
+	return err
+}
+
 func (s *Store) WeChatSettings(ctx context.Context) (WeChatSettings, error) {
 	var settings WeChatSettings
 	err := s.db.QueryRowContext(ctx, `SELECT app_id,app_secret_enc,redirect_uri,enabled,updated_at FROM wechat_settings WHERE id=1`).Scan(
@@ -1350,40 +1444,6 @@ FROM space_members m JOIN users u ON u.id=m.user_id WHERE m.space_id=$1 ORDER BY
 	return members, rows.Err()
 }
 
-func (s *Store) CreateSpaceMessage(ctx context.Context, spaceID string, userID int64, body string) (SpaceMessage, error) {
-	var message SpaceMessage
-	err := s.db.QueryRowContext(ctx, `WITH inserted AS (
-  INSERT INTO space_messages(space_id,user_id,body,created_at) VALUES($1,$2,$3,$4)
-  RETURNING id,space_id,user_id,body,created_at
-)
-SELECT i.id,i.space_id,i.user_id,u.display_name,u.avatar_url,i.body,i.created_at
-FROM inserted i JOIN users u ON u.id=i.user_id`, spaceID, userID, body, time.Now().UTC().Format(time.RFC3339Nano)).
-		Scan(&message.ID, &message.SpaceID, &message.UserID, &message.DisplayName, &message.AvatarURL, &message.Body, &message.CreatedAt)
-	return message, err
-}
-
-func (s *Store) SpaceMessages(ctx context.Context, spaceID string, afterID int64) ([]SpaceMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.space_id,m.user_id,u.display_name,u.avatar_url,m.body,m.created_at
-FROM (
-  SELECT id,space_id,user_id,body,created_at FROM space_messages
-  WHERE space_id=$1 AND id>$2 ORDER BY id DESC LIMIT 100
-) m JOIN users u ON u.id=m.user_id
-ORDER BY m.id`, spaceID, afterID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	messages := make([]SpaceMessage, 0)
-	for rows.Next() {
-		var message SpaceMessage
-		if err := rows.Scan(&message.ID, &message.SpaceID, &message.UserID, &message.DisplayName, &message.AvatarURL, &message.Body, &message.CreatedAt); err != nil {
-			return nil, err
-		}
-		messages = append(messages, message)
-	}
-	return messages, rows.Err()
-}
-
 func (s *Store) BindMember(ctx context.Context, member Member) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `UPDATE space_members SET newapi_user_id=$1,newapi_username=$2,newapi_display_name=$3,newapi_role=$4,user_token_enc=$5,user_token_last4=$6,verified_at=$7 WHERE space_id=$8 AND user_id=$9`,
@@ -1403,37 +1463,47 @@ func (s *Store) UpdateWalletOperation(ctx context.Context, operationID, status, 
 	return err
 }
 
-func (s *Store) WalletOperations(ctx context.Context, spaceID string, userID int64) ([]WalletOperation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,space_id,table_id,user_id,newapi_user_id,actor_user_id,kind,cents,quota,note,status,error,created_at,updated_at FROM wallet_operations WHERE space_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 50`, spaceID, userID)
+func (s *Store) WalletOperations(ctx context.Context, spaceID string, userID int64, limit, offset int) ([]WalletOperation, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM wallet_operations WHERE space_id=$1 AND user_id=$2`, spaceID, userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,space_id,table_id,user_id,newapi_user_id,actor_user_id,kind,cents,quota,note,status,error,created_at,updated_at FROM wallet_operations WHERE space_id=$1 AND user_id=$2 ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4`, spaceID, userID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	var operations []WalletOperation
+	operations := make([]WalletOperation, 0)
 	for rows.Next() {
 		var operation WalletOperation
 		if err := rows.Scan(&operation.ID, &operation.SpaceID, &operation.TableID, &operation.UserID, &operation.NewAPIUserID, &operation.ActorUserID, &operation.Kind, &operation.Cents, &operation.Quota, &operation.Note, &operation.Status, &operation.Error, &operation.CreatedAt, &operation.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		operations = append(operations, operation)
 	}
-	return operations, rows.Err()
+	return operations, total, rows.Err()
 }
 
 func (s *Store) ChannelLeaderboard(ctx context.Context, spaceID string) ([]ChannelLeaderboardEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,u.avatar_url,
+	rows, err := s.db.QueryContext(ctx, `WITH scoped AS (
+SELECT u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
   WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
   ELSE 0
-END),0)::BIGINT AS net_cents,
-COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions
+END),0)::BIGINT AS raw_cents,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
 FROM space_members m
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE m.space_id=$1 AND u.ranking_hidden=FALSE
 GROUP BY u.id,u.display_name,u.avatar_url
-ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
+)
+SELECT id,display_name,avatar_url,(raw_cents+adjustment_cents)::BIGINT AS net_cents,sessions
+FROM scoped
+ORDER BY net_cents DESC,sessions DESC,LOWER(display_name),id`, spaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1450,20 +1520,31 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, spaceID)
 }
 
 func (s *Store) LobbyLeaderboard(ctx context.Context, userID int64) ([]ChannelLeaderboardEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.display_name,u.avatar_url,
+	rows, err := s.db.QueryContext(ctx, `WITH scoped AS (
+SELECT m.space_id,u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
   WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
   ELSE 0
-END),0)::BIGINT AS net_cents,
-COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions
+END),0)::BIGINT AS raw_cents,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
 FROM space_members viewer
 JOIN space_members m ON m.space_id=viewer.space_id
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE viewer.user_id=$1 AND u.ranking_hidden=FALSE
-GROUP BY u.id,u.display_name,u.avatar_url
-ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, userID)
+GROUP BY m.space_id,u.id,u.display_name,u.avatar_url
+), totals AS (
+SELECT id,display_name,avatar_url,SUM(raw_cents+adjustment_cents)::BIGINT AS scoped_cents,SUM(sessions)::INTEGER AS sessions
+FROM scoped
+GROUP BY id,display_name,avatar_url
+)
+SELECT t.id,t.display_name,t.avatar_url,(t.scoped_cents+COALESCE(g.cents,0))::BIGINT AS net_cents,t.sessions
+FROM totals t
+LEFT JOIN ranking_adjustments g ON g.scope_space_id='' AND g.user_id=t.id
+ORDER BY net_cents DESC,t.sessions DESC,LOWER(t.display_name),t.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1477,6 +1558,160 @@ ORDER BY net_cents DESC,sessions DESC,LOWER(u.display_name),u.id`, userID)
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()
+}
+
+func (s *Store) AdminLeaderboard(ctx context.Context, spaceID string) ([]AdminRankingEntry, error) {
+	query := `WITH scoped AS (
+SELECT m.space_id,u.id,u.display_name,u.avatar_url,u.ranking_hidden,
+COALESCE(SUM(CASE
+  WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  ELSE 0
+END),0)::BIGINT AS raw_cents,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
+FROM space_members m
+JOIN users u ON u.id=m.user_id
+LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
+WHERE ($1='' OR m.space_id=$1)
+GROUP BY m.space_id,u.id,u.display_name,u.avatar_url,u.ranking_hidden
+), totals AS (
+SELECT id,display_name,avatar_url,ranking_hidden,SUM(raw_cents+adjustment_cents)::BIGINT AS scoped_cents,SUM(sessions)::INTEGER AS sessions
+FROM scoped
+GROUP BY id,display_name,avatar_url,ranking_hidden
+)
+SELECT t.id,t.display_name,t.avatar_url,
+(t.scoped_cents+CASE WHEN $1='' THEN COALESCE(g.cents,0) ELSE 0 END)::BIGINT AS net_cents,
+t.sessions,t.ranking_hidden
+FROM totals t
+LEFT JOIN ranking_adjustments g ON $1='' AND g.scope_space_id='' AND g.user_id=t.id
+ORDER BY net_cents DESC,t.sessions DESC,LOWER(t.display_name),t.id`
+	rows, err := s.db.QueryContext(ctx, query, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]AdminRankingEntry, 0)
+	for rows.Next() {
+		var entry AdminRankingEntry
+		if err := rows.Scan(&entry.UserID, &entry.DisplayName, &entry.AvatarURL, &entry.NetCents, &entry.Sessions, &entry.RankingHidden); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+func (s *Store) SetRankingNetCents(ctx context.Context, spaceID string, userID, netCents, actorUserID int64) error {
+	baseCents, err := s.rankingBaseCents(ctx, spaceID, userID)
+	if err != nil {
+		return err
+	}
+	adjustment, err := rankingAdjustment(netCents, baseCents)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO ranking_adjustments(scope_space_id,user_id,cents,actor_user_id,updated_at)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(scope_space_id,user_id) DO UPDATE SET cents=excluded.cents,actor_user_id=excluded.actor_user_id,updated_at=excluded.updated_at`,
+		spaceID, userID, adjustment, actorUserID, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) ResetRankingNetCents(ctx context.Context, spaceID string, actorUserID int64) (int64, error) {
+	entries, err := s.AdminLeaderboard(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, entry := range entries {
+		baseCents, err := rankingBaseCentsWithQueryer(ctx, tx, spaceID, entry.UserID)
+		if err != nil {
+			return 0, err
+		}
+		adjustment, err := rankingAdjustment(0, baseCents)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ranking_adjustments(scope_space_id,user_id,cents,actor_user_id,updated_at)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(scope_space_id,user_id) DO UPDATE SET cents=excluded.cents,actor_user_id=excluded.actor_user_id,updated_at=excluded.updated_at`,
+			spaceID, entry.UserID, adjustment, actorUserID, now); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(entries)), nil
+}
+
+type rankingQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) rankingBaseCents(ctx context.Context, spaceID string, userID int64) (int64, error) {
+	return rankingBaseCentsWithQueryer(ctx, s.db, spaceID, userID)
+}
+
+func rankingBaseCentsWithQueryer(ctx context.Context, queryer rankingQueryer, spaceID string, userID int64) (int64, error) {
+	if spaceID != "" {
+		var memberships int
+		var baseCents int64
+		err := queryer.QueryRowContext(ctx, `SELECT COUNT(DISTINCT m.user_id),COALESCE(SUM(CASE
+  WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  ELSE 0
+END),0)::BIGINT
+FROM space_members m
+LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+WHERE m.space_id=$1 AND m.user_id=$2`, spaceID, userID).Scan(&memberships, &baseCents)
+		if err != nil {
+			return 0, err
+		}
+		if memberships == 0 {
+			return 0, ErrNotFound
+		}
+		return baseCents, nil
+	}
+	var scopes int
+	var baseCents int64
+	err := queryer.QueryRowContext(ctx, `WITH scoped AS (
+SELECT m.space_id,COALESCE(SUM(CASE
+  WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  ELSE 0
+END),0)::BIGINT+COALESCE(MAX(a.cents),0)::BIGINT AS net_cents
+FROM space_members m
+LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
+WHERE m.user_id=$1
+GROUP BY m.space_id
+)
+SELECT COUNT(*),COALESCE(SUM(net_cents),0)::BIGINT FROM scoped`, userID).Scan(&scopes, &baseCents)
+	if err != nil {
+		return 0, err
+	}
+	if scopes == 0 {
+		return 0, ErrNotFound
+	}
+	return baseCents, nil
+}
+
+func rankingAdjustment(targetCents, baseCents int64) (int64, error) {
+	if baseCents > 0 && targetCents < math.MinInt64+baseCents {
+		return 0, ErrRankingAdjustmentRange
+	}
+	if baseCents < 0 && targetCents > math.MaxInt64+baseCents {
+		return 0, ErrRankingAdjustmentRange
+	}
+	return targetCents - baseCents, nil
 }
 
 func (s *Store) SaveTableState(ctx context.Context, spaceID, tableID string, data []byte) error {
@@ -1510,22 +1745,26 @@ VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(space_id,table_id,hand_id,user_id) DO N
 	return tx.Commit()
 }
 
-func (s *Store) HandHistories(ctx context.Context, spaceID string, userID int64) ([]HandHistory, error) {
+func (s *Store) HandHistories(ctx context.Context, spaceID string, userID int64, limit, offset int) ([]HandHistory, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hand_histories WHERE space_id=$1 AND user_id=$2`, spaceID, userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT space_id,table_id,hand_id,user_id,game_type,snapshot_json,completed_at
-FROM hand_histories WHERE space_id=$1 AND user_id=$2 ORDER BY completed_at DESC,hand_id DESC LIMIT 50`, spaceID, userID)
+FROM hand_histories WHERE space_id=$1 AND user_id=$2 ORDER BY completed_at DESC,hand_id DESC,table_id LIMIT $3 OFFSET $4`, spaceID, userID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	histories := make([]HandHistory, 0)
 	for rows.Next() {
 		var history HandHistory
 		if err := rows.Scan(&history.SpaceID, &history.TableID, &history.HandID, &history.UserID, &history.GameType, &history.Snapshot, &history.CompletedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		histories = append(histories, history)
 	}
-	return histories, rows.Err()
+	return histories, total, rows.Err()
 }
 
 func (s *Store) LoadTableState(ctx context.Context, spaceID, tableID string) ([]byte, error) {

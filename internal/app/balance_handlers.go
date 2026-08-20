@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,6 +38,10 @@ func (s *Server) handleManagedBalances(w http.ResponseWriter, r *http.Request, a
 	if err != nil {
 		return err
 	}
+	maxAdjustmentCents, err := newapi.MaxCentsForQuota(space.QuotaPerUSD)
+	if err != nil {
+		return err
+	}
 
 	result := make([]managedBalanceMember, 0, len(members))
 	for _, member := range members {
@@ -55,7 +60,7 @@ func (s *Server) handleManagedBalances(w http.ResponseWriter, r *http.Request, a
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"space":   map[string]any{"id": space.ID, "name": space.Name, "quota_per_usd": space.QuotaPerUSD},
+		"space":   map[string]any{"id": space.ID, "name": space.Name, "quota_per_usd": space.QuotaPerUSD, "max_adjustment_cents": maxAdjustmentCents},
 		"members": result,
 	})
 	return nil
@@ -97,6 +102,13 @@ func (s *Server) handleAdjustManagedBalance(w http.ResponseWriter, r *http.Reque
 	if utf8.RuneCountInString(input.Reason) < 2 || utf8.RuneCountInString(input.Reason) > 200 {
 		return &apiError{Status: http.StatusBadRequest, Message: "调整原因需填写 2 到 200 个字符"}
 	}
+	maxAdjustmentCents, err := newapi.MaxCentsForQuota(space.QuotaPerUSD)
+	if err != nil {
+		return err
+	}
+	if input.AmountCents > maxAdjustmentCents {
+		return &apiError{Status: http.StatusBadRequest, Message: fmt.Sprintf("调整金额过大，单次最多为 %s", formatUSDCents(maxAdjustmentCents))}
+	}
 	quota, err := newapi.CentsToQuota(input.AmountCents, space.QuotaPerUSD)
 	if err != nil {
 		return &apiError{Status: http.StatusBadRequest, Message: "调整金额超出可用范围"}
@@ -121,7 +133,8 @@ func (s *Server) handleAdjustManagedBalance(w http.ResponseWriter, r *http.Reque
 	}
 	add := input.Direction == "add"
 	if !add && newUser.Quota < quota {
-		return &apiError{Status: http.StatusConflict, Message: "该成员余额不足，无法完成扣减"}
+		availableCents := newUser.Quota / (space.QuotaPerUSD / 100)
+		return &apiError{Status: http.StatusConflict, Message: fmt.Sprintf("扣减金额不能超过该成员当前余额 %s", formatUSDCents(availableCents))}
 	}
 
 	kind := "manual_debit"
@@ -156,6 +169,10 @@ func (s *Server) handleAdjustManagedBalance(w http.ResponseWriter, r *http.Reque
 	operation.Status = "completed"
 	writeJSON(w, http.StatusOK, map[string]any{"member": item, "operation": operation})
 	return nil
+}
+
+func formatUSDCents(cents int64) string {
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }
 
 func (s *Server) managedBalanceSpace(r *http.Request, actor store.User) (store.Space, error) {

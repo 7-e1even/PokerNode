@@ -144,7 +144,7 @@ export default function BalanceManager({ spaces, initialSpaceID, onBack }: {
         </Card>
       </div>
 
-      {editing && <AdjustBalanceDialog spaceID={spaceID} spaceName={data?.space.name || selectedSpace?.name || "当前频道"} member={editing} onClose={() => setEditing(null)} onAdjusted={(member) => {
+      {editing && data && <AdjustBalanceDialog spaceID={spaceID} spaceName={data.space.name || selectedSpace?.name || "当前频道"} maxAdjustmentCents={data.space.max_adjustment_cents} member={editing} onClose={() => setEditing(null)} onAdjusted={(member) => {
         setData((current) => current ? { ...current, members: current.members.map((item) => item.user_id === member.user_id ? member : item) } : current);
         setEditing(null);
       }} />}
@@ -164,9 +164,10 @@ export default function BalanceManager({ spaces, initialSpaceID, onBack }: {
   );
 }
 
-function AdjustBalanceDialog({ spaceID, spaceName, member, onClose, onAdjusted }: {
+function AdjustBalanceDialog({ spaceID, spaceName, maxAdjustmentCents, member, onClose, onAdjusted }: {
   spaceID: string;
   spaceName: string;
+  maxAdjustmentCents: number;
   member: ManagedBalanceMember;
   onClose: () => void;
   onAdjusted: (member: ManagedBalanceMember) => void;
@@ -177,11 +178,21 @@ function AdjustBalanceDialog({ spaceID, spaceName, member, onClose, onAdjusted }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const cents = useMemo(() => dollarsToCents(amount), [amount]);
+  const maximumCents = direction === "subtract"
+    ? Math.min(maxAdjustmentCents, member.balance?.cents || 0)
+    : maxAdjustmentCents;
+  const amountError = amount.trim() && !cents
+    ? "请输入大于 0 且最多两位小数的金额"
+    : cents > maximumCents
+      ? direction === "subtract"
+        ? `扣减金额不能超过当前余额 ${formatUSD(maximumCents)}`
+        : `调整金额过大，单次最多为 ${formatUSD(maximumCents)}`
+      : "";
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!cents) {
-      setError("请输入大于 0 且最多两位小数的金额");
+    if (!cents || amountError) {
+      setError(amountError || "请输入大于 0 且最多两位小数的金额");
       return;
     }
     if (reason.trim().length < 2) {
@@ -210,11 +221,11 @@ function AdjustBalanceDialog({ spaceID, spaceName, member, onClose, onAdjusted }
           <DialogHeader><DialogTitle>调整 {member.poker_display_name} 的余额</DialogTitle><DialogDescription>频道：{spaceName} · 当前余额 {member.balance ? formatUSD(member.balance.cents) : "未知"}。提交后只会同步到这个频道的 New API。</DialogDescription></DialogHeader>
           <FieldGroup className="mt-6">
             <Field><FieldLabel>调整类型</FieldLabel><ToggleGroup type="single" variant="outline" spacing={0} value={direction} onValueChange={(value) => value && setDirection(value as Direction)} className="w-full"><ToggleGroupItem value="add" className="flex-1"><Plus />增加</ToggleGroupItem><ToggleGroupItem value="subtract" className="flex-1"><Minus />扣减</ToggleGroupItem></ToggleGroup></Field>
-            <Field><FieldLabel htmlFor="balance-amount">金额（美元）</FieldLabel><Input id="balance-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" autoFocus required /><FieldDescription>{cents ? `本次${direction === "add" ? "增加" : "扣减"} ${formatUSD(cents)}` : "最多输入两位小数"}</FieldDescription></Field>
+            <Field data-invalid={Boolean(amountError)}><FieldLabel htmlFor="balance-amount">金额（美元）</FieldLabel><Input id="balance-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" autoFocus required aria-invalid={Boolean(amountError)} />{amountError ? <FieldError>{amountError}</FieldError> : <FieldDescription>{cents ? `本次${direction === "add" ? "增加" : "扣减"} ${formatUSD(cents)} · ` : ""}{direction === "add" ? `单次最多 ${formatUSD(maximumCents)}` : `最多可扣减 ${formatUSD(maximumCents)}（当前余额）`}</FieldDescription>}</Field>
             <Field><FieldLabel htmlFor="balance-reason">调整原因</FieldLabel><Textarea id="balance-reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="例如：活动奖励、人工退款" minLength={2} maxLength={200} required /></Field>
             <FieldError>{error}</FieldError>
           </FieldGroup>
-          <DialogFooter className="mt-6"><Button type="button" variant="outline" disabled={busy} onClick={onClose}>取消</Button><Button disabled={busy || !cents || reason.trim().length < 2}>{busy && <Spinner data-icon="inline-start" />}{busy ? "正在同步…" : `确认${direction === "add" ? "增加" : "扣减"}`}</Button></DialogFooter>
+          <DialogFooter className="mt-6"><Button type="button" variant="outline" disabled={busy} onClick={onClose}>取消</Button><Button disabled={busy || !cents || Boolean(amountError) || reason.trim().length < 2}>{busy && <Spinner data-icon="inline-start" />}{busy ? "正在同步…" : `确认${direction === "add" ? "增加" : "扣减"}`}</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

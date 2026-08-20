@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowRight, Copy, Crown, DoorOpen, Gamepad2, Link2, LogOut, Menu, Plus, RadioTower,
+  ArrowRight, ChevronsUpDown, Copy, Crown, DoorOpen, Gamepad2, Link2, LogOut, Menu, Plus, RadioTower,
   Settings2, ShieldCheck, Trophy,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -8,12 +8,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -28,6 +30,7 @@ import type { ChannelLeaderboardEntry, Space, User } from "./types";
 
 interface Props {
   user: User;
+  siteName: string;
   view: "ranking" | "channels";
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenSpace: (space: Space) => void;
@@ -37,9 +40,10 @@ interface Props {
   onLogout: () => void;
 }
 
-export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: Props) {
+export default function Dashboard({ user, siteName, view, onViewChange, onOpenSpace, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [leaderboard, setLeaderboard] = useState<ChannelLeaderboardEntry[]>([]);
+  const [leaderboardSpaceID, setLeaderboardSpaceID] = useState("");
   const [loading, setLoading] = useState(true);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "join" | null>(null);
@@ -55,11 +59,22 @@ export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpe
   }, []);
 
   useEffect(() => {
-    api<{ leaderboard: ChannelLeaderboardEntry[] }>("/api/leaderboard")
-      .then((result) => setLeaderboard(result.leaderboard || []))
-      .catch((caught) => setLeaderboardError(caught instanceof Error ? caught.message : "读取大厅排名失败"))
-      .finally(() => setLeaderboardLoading(false));
-  }, []);
+    let active = true;
+    setLeaderboardLoading(true);
+    setLeaderboardError("");
+    const path = leaderboardSpaceID ? `/api/spaces/${leaderboardSpaceID}/leaderboard` : "/api/leaderboard";
+    api<{ leaderboard: ChannelLeaderboardEntry[] }>(path)
+      .then((result) => {
+        if (active) setLeaderboard(result.leaderboard || []);
+      })
+      .catch((caught) => {
+        if (active) setLeaderboardError(caught instanceof Error ? caught.message : "读取排行榜失败");
+      })
+      .finally(() => {
+        if (active) setLeaderboardLoading(false);
+      });
+    return () => { active = false; };
+  }, [leaderboardSpaceID]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -97,6 +112,7 @@ export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpe
     <div className="game-canvas flex min-h-svh flex-col">
       <GameHeader
         user={user}
+        siteName={siteName}
         view={view}
         onViewChange={onViewChange}
         onOpenMenu={() => setMobileOpen(true)}
@@ -109,9 +125,17 @@ export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpe
       <div className="flex min-h-0 flex-1">
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {view === "ranking" ? (
-            <RankingView user={user} leaderboard={leaderboard} loading={leaderboardLoading} error={leaderboardError} />
+            <RankingView
+              user={user}
+              spaces={spaces}
+              selectedSpaceID={leaderboardSpaceID}
+              onSelectSpace={setLeaderboardSpaceID}
+              leaderboard={leaderboard}
+              loading={leaderboardLoading}
+              error={leaderboardError}
+            />
           ) : (
-            <ChannelPickerView spaces={spaces} loading={loading} error={error} onCreate={() => setDialog("create")} onJoin={() => setDialog("join")} onOpenSpace={openSpace} />
+            <ChannelPickerView siteName={siteName} spaces={spaces} loading={loading} error={error} onCreate={() => setDialog("create")} onJoin={() => setDialog("join")} onOpenSpace={openSpace} />
           )}
         </main>
       </div>
@@ -147,8 +171,9 @@ export default function Dashboard({ user, view, onViewChange, onOpenSpace, onOpe
   );
 }
 
-function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: {
+function GameHeader({ user, siteName, view, onViewChange, onOpenMenu, onOpenBindings, onOpenSettings, onOpenAdmin, onLogout }: {
   user: User;
+  siteName: string;
   view: "ranking" | "channels";
   onViewChange: (view: "ranking" | "channels") => void;
   onOpenMenu: () => void;
@@ -163,7 +188,7 @@ function GameHeader({ user, view, onViewChange, onOpenMenu, onOpenBindings, onOp
         <Button size="icon" variant="secondary" className="min-h-11 min-w-11 md:hidden" onClick={onOpenMenu} aria-label="打开游戏导航"><Menu /></Button>
         <div className="flex min-w-0 items-center gap-3">
           <BrandMark className="size-10" aria-hidden="true" />
-          <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">PokerNode</strong><small className="block truncate">Friends Game Hall</small></span>
+          <span className="hidden min-w-0 sm:block"><strong className="block truncate font-heading">{siteName}</strong><small className="block truncate">Friends Game Hall</small></span>
         </div>
         <nav className="hidden items-center gap-1 md:flex" aria-label="主导航">
           <Button variant={view === "ranking" ? "secondary" : "ghost"} onClick={() => onViewChange("ranking")}><Trophy data-icon="inline-start" />排行榜</Button>
@@ -228,8 +253,11 @@ function LobbySidebarGroup({ label, spaces, empty, onOpenSpace }: {
   );
 }
 
-function RankingView({ user, leaderboard, loading, error }: {
+function RankingView({ user, spaces, selectedSpaceID, onSelectSpace, leaderboard, loading, error }: {
   user: User;
+  spaces: Space[];
+  selectedSpaceID: string;
+  onSelectSpace: (spaceID: string) => void;
   leaderboard: ChannelLeaderboardEntry[];
   loading: boolean;
   error: string;
@@ -238,9 +266,12 @@ function RankingView({ user, leaderboard, loading, error }: {
     <div className="player-lobby flex flex-1 overflow-auto">
       <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-7 sm:px-6 sm:py-10">
         <section className="flex flex-col gap-5" aria-labelledby="ranking-title">
-          <header className="flex flex-col gap-2">
-            <h1 id="ranking-title" className="font-heading text-3xl font-semibold tracking-tight">排行榜</h1>
-            <p className="text-sm text-muted-foreground">查看你已加入频道的已结算战绩。</p>
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-2">
+              <h1 id="ranking-title" className="font-heading text-3xl font-semibold tracking-tight">排行榜</h1>
+              <p className="text-sm text-muted-foreground">查看你已加入频道的已结算战绩。</p>
+            </div>
+            <ChannelRankingFilter spaces={spaces} value={selectedSpaceID} onValueChange={onSelectSpace} />
           </header>
 
           <LobbyLeaderboard entries={leaderboard} currentUserID={user.id} loading={loading} error={error} />
@@ -250,7 +281,61 @@ function RankingView({ user, leaderboard, loading, error }: {
   );
 }
 
-function ChannelPickerView({ spaces, loading, error, onCreate, onJoin, onOpenSpace }: {
+function ChannelRankingFilter({ spaces, value, onValueChange }: {
+  spaces: Space[];
+  value: string;
+  onValueChange: (spaceID: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedSpace = spaces.find((space) => space.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          aria-label="选择排行榜频道"
+          className="w-full justify-between sm:w-64"
+        >
+          <span className="truncate">{selectedSpace?.name || "全部频道"}</span>
+          <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[var(--radix-popover-trigger-width)] p-0">
+        <Command>
+          <CommandInput placeholder="搜索频道…" />
+          <CommandList>
+            <CommandEmpty>没有找到频道</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="全部频道"
+                data-checked={value === ""}
+                onSelect={() => { onValueChange(""); setOpen(false); }}
+              >
+                全部频道
+              </CommandItem>
+              {spaces.map((space) => (
+                <CommandItem
+                  key={space.id}
+                  value={`${space.name} ${space.id}`}
+                  data-checked={value === space.id}
+                  onSelect={() => { onValueChange(space.id); setOpen(false); }}
+                >
+                  <span className="truncate">{space.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ChannelPickerView({ siteName, spaces, loading, error, onCreate, onJoin, onOpenSpace }: {
+  siteName: string;
   spaces: Space[];
   loading: boolean;
   error: string;
@@ -264,12 +349,12 @@ function ChannelPickerView({ spaces, loading, error, onCreate, onJoin, onOpenSpa
         <section className="flex flex-col gap-5" aria-labelledby="platform-title">
           <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div className="flex max-w-2xl flex-col gap-3">
-              <Badge variant="outline" className="w-fit"><Gamepad2 data-icon="inline-start" />PokerNode Platform</Badge>
+              <Badge variant="outline" className="w-fit"><Gamepad2 data-icon="inline-start" />{siteName} Platform</Badge>
               <div className="flex items-center gap-2">
                 <h1 id="platform-title" className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">选择频道</h1>
                 <Badge variant="secondary">{spaces.length}</Badge>
               </div>
-              <p className="text-sm leading-6 text-muted-foreground">进入频道后选择牌桌，查看在线牌友和频道内的实时排名。</p>
+              <p className="text-sm leading-6 text-muted-foreground">进入频道后选择牌桌，查看在线牌友并开始游戏。</p>
             </div>
             <div className="flex shrink-0 gap-2">
               <Button className="min-h-11 lg:min-h-8" variant="outline" onClick={onJoin}><DoorOpen data-icon="inline-start" />邀请码加入</Button>
@@ -349,7 +434,7 @@ function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
         <Badge className="shrink-0" variant={space.can_manage ? "secondary" : "outline"}>{space.can_manage ? "管理员" : "成员"}</Badge>
         <ArrowRight data-icon="inline-end" className="shrink-0 text-muted-foreground" />
       </span>
-      <span className="text-xs leading-5 text-muted-foreground">{space.can_manage ? "管理牌桌、成员与频道设置" : "查看牌桌与频道排名"}</span>
+      <span className="text-xs leading-5 text-muted-foreground">{space.can_manage ? "管理牌桌、成员与频道设置" : "查看牌桌并开始游戏"}</span>
     </Button>
   );
 }
