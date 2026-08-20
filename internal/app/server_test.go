@@ -1654,7 +1654,11 @@ func TestChannelManagerCanManageMultipleAssignedChannels(t *testing.T) {
 		Members []store.Member `json:"members"`
 	}
 	requestJSON(t, manager, http.MethodGet, appServer.URL+"/api/spaces/managed-a/members", nil, http.StatusOK, &managedMembers)
-	if len(managedMembers.Members) != 1 || managedMembers.Members[0].UserID != createdManager.User.ID {
+	memberIDs := make(map[int64]bool, len(managedMembers.Members))
+	for _, member := range managedMembers.Members {
+		memberIDs[member.UserID] = true
+	}
+	if len(managedMembers.Members) != 2 || !memberIDs[1] || !memberIDs[createdManager.User.ID] {
 		t.Fatalf("channel manager member scope was not applied: %#v", managedMembers.Members)
 	}
 	requestJSON(t, manager, http.MethodPost, appServer.URL+"/api/spaces/unassigned-c/tables", map[string]any{
