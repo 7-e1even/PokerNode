@@ -9,12 +9,11 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -212,57 +211,63 @@ export default function PokerRoom({ user, initialSpace, initialTable, onBack }: 
   return (
     <main className="table-room poker-room flex h-svh min-h-0 flex-col overflow-hidden">
       <section className="table-room__canvas poker-room__canvas relative min-h-0 flex-1 overflow-hidden">
-        <div className="table-room-hud poker-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2">
-          <div className="table-room-hud__identity poker-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
-            <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
-            <BrandMark className="size-7 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 pl-1">
-              <h1 className="truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
-              <span className="hidden truncate text-xs text-muted-foreground md:block">
-                {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
-              </span>
+        <div className="table-room-hud poker-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2">
+          <div className="poker-room-hud__primary pointer-events-none flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <div className="table-room-hud__identity poker-room-hud__identity pointer-events-auto flex min-w-0 items-center p-1 pr-3">
+              <IconButton label="返回频道" onClick={onBack}><ArrowLeft /></IconButton>
+              <BrandMark className="size-7 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 pl-1">
+                <h1 className="truncate font-heading text-sm font-semibold">{table?.name || "No-Limit · $0.50 / $1"}</h1>
+                <span className="hidden truncate text-xs text-muted-foreground md:block">
+                  {space.name} · {table ? `${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}` : "6 人桌"}
+                </span>
+              </div>
             </div>
+
+            {table && (
+              <div className="table-room-hud__status poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap px-2 py-1" aria-live="polite">
+                <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
+                <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
+                <Separator orientation="vertical" className="h-4" />
+                <span className="text-xs text-muted-foreground">
+                  {table.last_result
+                    ? `${resultMessage(table.last_result.message)} · ${money(table.last_result.pot_cents)}`
+                    : `盲注 ${money(table.small_blind_cents)} / ${money(table.big_blind_cents)}`}
+                </span>
+                {table.current_bet_cents > 0 && (
+                  <>
+                    <Separator orientation="vertical" className="hidden h-4 sm:block" />
+                    <span className="hidden text-xs text-muted-foreground sm:inline">{betStatusLabel(table)} · {money(table.current_bet_cents)}</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
-          {table && (
-            <div className="table-room-hud__status poker-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap rounded-full border bg-background/90 px-2 py-1 shadow-sm backdrop-blur-md" aria-live="polite">
-              <Badge variant="secondary">第 {table.hand_id || 1} 手</Badge>
-              <strong className="px-1 text-xs">{streetLabel(table.street)}</strong>
-              <Separator orientation="vertical" className="h-4" />
-              <span className="text-xs text-muted-foreground">盲注 {money(table.small_blind_cents)} / {money(table.big_blind_cents)}</span>
-              {table.current_bet_cents > 0 && (
-                <>
-                  <Separator orientation="vertical" className="hidden h-4 sm:block" />
-                  <span className="hidden text-xs text-muted-foreground sm:inline">{betStatusLabel(table)} · {money(table.current_bet_cents)}</span>
-                </>
-              )}
-            </div>
-          )}
-
-          <div className="table-room-hud__actions poker-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+          <div className="table-room-hud__actions poker-room-hud__actions pointer-events-auto flex shrink-0 items-center gap-1">
             <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite">
               <span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />
               {connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}
             </Badge>
             {space.is_bound && (
-              <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
+              <Button className="rounded-full" size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
                 <CircleDollarSign data-icon="inline-start" />
                 <span className="hidden md:inline">{balance ? money(balance.cents) : "—"}</span>
               </Button>
             )}
+            <Button className="rounded-full" size="sm" variant="ghost" onClick={onBack} aria-label="离开牌桌">
+              <DoorOpen data-icon="inline-start" />
+              <span className="hidden sm:inline">离开牌桌</span>
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
+                <Button className="rounded-full" size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">
                 <DropdownMenuGroup>
                   <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />牌桌规则</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setHistoryOpen(true)}><History />资金记录</DropdownMenuItem>
                   {space.can_manage && <DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 />频道设置</DropdownMenuItem>}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -471,13 +476,6 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
               ? <PlayingCard key={`${table.hand_id}-${index}-${table.board[index].rank}-${table.board[index].suit}`} card={table.board[index]} dealIndex={boardDealIndex(table.street, index)} dealOrigin={boardDealOrigin(index)} motion="board" />
               : <PlayingCard key={`${table.hand_id}-${index}-slot`} placeholder />)}
           </div>
-          {table.last_result && winnerStage !== "announcement" && (
-            <div className="poker-hand-result absolute hidden items-center gap-2 rounded-full border bg-background px-3 py-1.5 text-xs shadow-sm sm:flex" aria-live="polite">
-              <span className="text-muted-foreground">本手结束</span>
-              <strong>{resultMessage(table.last_result.message)}</strong>
-              <span className="font-medium tabular-nums">{money(table.last_result.pot_cents)}</span>
-            </div>
-          )}
         </div>
 
         {table.last_result && winnerStage === "announcement" && (
@@ -516,8 +514,8 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
       )}
 
       {seated && !allowed.can_act && (
-        <ActionCard className={table.can_start ? "w-[min(38rem,calc(100%-2rem))]" : "w-auto"}>
-          <div className="poker-waiting-actions flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
+        <div className={cn("poker-action-pod poker-waiting-dock absolute left-1/2 z-10 -translate-x-1/2", table.can_start ? "w-[min(38rem,calc(100%-2rem))]" : "w-auto")}>
+          <div className="poker-waiting-actions flex flex-col items-stretch justify-between gap-3 px-2 py-1 sm:flex-row sm:items-center sm:gap-4">
             {activeKickVote ? (
               <>
                 <div className="min-w-0 flex-1">
@@ -550,18 +548,23 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
             ) : table.can_start ? (
               <>
                 <div className="min-w-0">
-                  <strong className="block truncate text-sm">
-                    <span className="sm:hidden">{table.last_result ? `${resultMessage(table.last_result.message)} · ${money(table.last_result.pot_cents)}` : `准备第 ${table.hand_id + 1} 手`}</span>
-                    <span className="hidden sm:inline">准备第 {table.hand_id + 1} 手</span>
-                  </strong>
-                  <span className="block truncate text-xs text-muted-foreground"><span className="sm:hidden">第 {table.hand_id + 1} 手 · </span>已准备 {readyPlayers.length}/{fundedPlayers.length}，全员准备后自动发牌</span>
+                  <strong className="block truncate text-sm">{viewerPlayer?.ready ? "等待其他玩家" : `准备第 ${table.hand_id + 1} 手`}</strong>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {viewerPlayer?.ready
+                      ? readyPlayers.length >= fundedPlayers.length
+                        ? "全员已准备，正在开始下一手"
+                        : `还差 ${fundedPlayers.length - readyPlayers.length} 人准备`
+                      : `已准备 ${readyPlayers.length}/${fundedPlayers.length}，全员准备后自动发牌`}
+                  </span>
                 </div>
                 <div className="flex shrink-0 items-center justify-end gap-1">
                   {table.can_leave && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}
-                  <Button className="rounded-full" size="lg" disabled={busy || viewerPlayer?.ready} onClick={() => void run("ready")}>
-                    {busy ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
-                    {busy ? "准备中…" : viewerPlayer?.ready ? "已准备" : "准备"}
-                  </Button>
+                  {!viewerPlayer?.ready && (
+                    <Button className="rounded-full" size="lg" disabled={busy} onClick={() => void run("ready")}>
+                      {busy ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                      {busy ? "准备中…" : "准备"}
+                    </Button>
+                  )}
                 </div>
               </>
             ) : (
@@ -569,7 +572,7 @@ function TableScene({ spaceID, tableID, table, kickVote, user, onError, onChange
             )}
             {!table.can_start && table.can_leave && <Button className="rounded-full" size="lg" variant="outline" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}
           </div>
-        </ActionCard>
+        </div>
       )}
 
       {seated && allowed.can_act && (
@@ -645,7 +648,7 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown, canRequestKi
 }) {
   const { player, x, y } = layout;
   const positions = seatPositions(table, player.seat);
-  const action = player.is_acting ? "轮到行动" : playerActionLabel(player);
+  const action = player.is_acting ? "轮到行动" : (isViewer && player.ready ? "" : playerActionLabel(player));
   const dealOrigin = { x: `${roundLayout(76.5 - x)}cqw`, y: `${roundLayout(50 - y)}cqh` };
   return (
     <div
@@ -657,12 +660,9 @@ function Seat({ layout, isViewer, table, isWinner, showWinnerCrown, canRequestKi
     >
       {player.cards && player.cards.length > 0 && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2">{player.cards.map((card, index) => <PlayingCard card={card} dealIndex={holeCardDealIndex(table, player.seat, index)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-${index}-${card.rank}-${card.suit}`} />)}</div>}
       {!player.cards && player.in_hand && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2"><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 0)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-0`} /><PlayingCard hidden dealIndex={holeCardDealIndex(table, player.seat, 1)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-back-1`} /></div>}
-      <Card size="sm" className="poker-seat-card relative w-38 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm md:w-max md:min-w-42 md:max-w-54" data-acting={player.is_acting ? "true" : undefined}>
+      <Card size="sm" className="poker-seat-card relative w-max min-w-28 max-w-48 gap-0 overflow-visible rounded-full bg-background py-2 shadow-sm" data-acting={player.is_acting ? "true" : undefined}>
         {isWinner && showWinnerCrown && <span className="poker-winner-crown absolute -top-4 left-1/2 grid size-7 -translate-x-1/2 place-items-center rounded-full bg-winner text-winner-foreground shadow-md" role="img" aria-label="本手赢家"><Crown aria-hidden="true" /></span>}
         <CardContent className="flex items-center gap-1.5 px-2 md:gap-2">
-          <Avatar className="size-8 md:size-10">
-            <AvatarFallback>{player.name.slice(0, 2).toUpperCase()}</AvatarFallback>
-          </Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1">
               <strong className="min-w-0 flex-1 truncate text-sm">{player.name}{isViewer && <span className="hidden sm:inline">（你）</span>}</strong>

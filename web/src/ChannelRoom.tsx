@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  ArrowLeft, CircleDollarSign, Clock3, Copy, Crown, Eraser, Link2, Plus, Shuffle, Table2,
+  ArrowLeft, CircleDollarSign, Clock3, Copy, Crown, Eraser, Link2, MoreHorizontal, Plus, Table2,
   Spade, Trash2, Trophy,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -51,6 +51,7 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [gameType, setGameType] = useState<GameType>("texas_holdem");
+  const [tableManagement, setTableManagement] = useState<TableSummary | null>(null);
   const [tableAdminAction, setTableAdminAction] = useState<TableAdminAction | null>(null);
   const [tableActionBusy, setTableActionBusy] = useState(false);
   const spaceRequestInFlight = useRef(false);
@@ -136,12 +137,6 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
 
   const gameTables = useMemo(() => tables.filter((table) => table.game_type === gameType), [gameType, tables]);
   const viewerTable = useMemo(() => tables.find((table) => table.viewer_seated), [tables]);
-  const quickTable = useMemo(
-    () => viewerTable
-      || gameTables.find((table) => table.player_count > 0 && table.player_count < table.max_players)
-      || gameTables.find((table) => table.player_count < table.max_players),
-    [gameTables, viewerTable],
-  );
   const onlinePlayers = tables.reduce((total, table) => total + table.player_count, 0);
   const canManageBalances = space.is_owner || !!user.permissions?.includes("balances:manage");
   const roomPlayers = useMemo<RoomPlayer[]>(
@@ -240,23 +235,20 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
       <main className="min-w-0 flex-1 overflow-auto">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <Card className="min-w-0 [--card-spacing:--spacing(5)]">
-              <CardHeader className="channel-table-card-header">
-                <CardTitle>{gameType === "landlord" ? "斗地主" : "德州扑克"}牌局</CardTitle>
-                <CardDescription>选择一张牌桌坐下，空位和玩家状态每 5 秒更新。</CardDescription>
-                <CardAction className="channel-table-card-actions flex gap-2"><Button className="min-h-11 lg:min-h-8" variant="outline" disabled={!quickTable} onClick={() => quickTable && openTable(quickTable)}><Shuffle data-icon="inline-start" />{viewerTable ? "返回当前牌桌" : "快速加入"}</Button>{space.can_manage && <Button className="min-h-11 lg:min-h-8" onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />新建牌桌</Button>}</CardAction>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                {(spaceError || error) && <Alert variant="destructive"><AlertDescription>{spaceError || error}</AlertDescription></Alert>}
+            <section className="flex min-w-0 flex-col gap-4" aria-labelledby="table-list-title">
+              <header className="flex flex-col gap-1">
+                <h2 id="table-list-title" className="font-heading text-xl font-semibold">{gameType === "landlord" ? "斗地主" : "德州扑克"}牌局</h2>
+                <p className="text-sm text-muted-foreground">选择牌桌直接进入，空位和玩家状态每 5 秒更新。</p>
+              </header>
+              {(spaceError || error) && <Alert variant="destructive"><AlertDescription>{spaceError || error}</AlertDescription></Alert>}
               {loading ? (
                   <div className="table-map-grid">{Array.from({ length: 6 }, (_, index) => <TableSkeleton key={index} />)}</div>
               ) : gameTables.length === 0 ? (
                   <Empty className="min-h-80 border"><EmptyHeader><EmptyMedia variant="icon"><Table2 /></EmptyMedia><EmptyTitle>还没有牌桌</EmptyTitle><EmptyDescription>{space.can_manage ? "创建第一张牌桌，频道就可以开局了。" : "频道管理员还没有创建牌桌。"}</EmptyDescription></EmptyHeader>{space.can_manage && <EmptyContent><Button onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />创建牌桌</Button></EmptyContent>}</Empty>
               ) : (
-                  <div className="table-map-grid">{gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onClear={space.can_manage && table.player_count > 0 ? () => setTableAdminAction({ mode: "clear", table }) : undefined} onDelete={space.can_manage ? () => setTableAdminAction({ mode: "delete", table }) : undefined} />)}{space.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
+                  <div className="table-map-grid">{gameTables.map((table) => <TableMapTile key={table.id} table={table} blockedBySeat={!!viewerTable && !table.viewer_seated} onOpen={() => openTable(table)} onManage={space.can_manage ? () => setTableManagement(table) : undefined} />)}{space.can_manage && <CreateTableTile onCreate={() => setCreateOpen(true)} />}</div>
               )}
-              </CardContent>
-            </Card>
+            </section>
 
             <LeaderboardCard entries={leaderboard} players={roomPlayers} currentUserID={user.id} loading={leaderboardLoading} error={leaderboardError} />
           </div>
@@ -274,6 +266,36 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
           toast.success("牌桌已创建");
         }}
       />
+
+      <Dialog open={tableManagement !== null} onOpenChange={(open) => !open && setTableManagement(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>管理“{tableManagement?.name}”</DialogTitle>
+            <DialogDescription>选择要如何处理这张牌桌。执行前还会再次确认。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            {tableManagement && tableManagement.player_count > 0 && (
+              <Button className="h-auto justify-start gap-3 px-3 py-3 text-left" variant="outline" onClick={() => { const table = tableManagement; setTableManagement(null); setTableAdminAction({ mode: "clear", table }); }}>
+                <Eraser data-icon="inline-start" />
+                <span className="flex min-w-0 flex-col items-start gap-0.5 whitespace-normal">
+                  <strong>清空玩家，保留牌桌</strong>
+                  <span className="text-xs font-normal text-muted-foreground">结算并移出当前 {tableManagement.player_count} 名玩家，牌桌配置保持不变。</span>
+                </span>
+              </Button>
+            )}
+            {tableManagement && (
+              <Button className="h-auto justify-start gap-3 px-3 py-3 text-left" variant="destructive" onClick={() => { const table = tableManagement; setTableManagement(null); setTableAdminAction({ mode: "delete", table }); }}>
+                <Trash2 data-icon="inline-start" />
+                <span className="flex min-w-0 flex-col items-start gap-0.5 whitespace-normal">
+                  <strong>永久删除牌桌</strong>
+                  <span className="text-xs font-normal">{tableManagement.player_count > 0 ? `先结算并移出 ${tableManagement.player_count} 名玩家，再删除牌桌。` : "删除牌桌及当前牌局状态，资金流水仍会保留。"}</span>
+                </span>
+              </Button>
+            )}
+          </div>
+          <DialogFooter><Button variant="ghost" onClick={() => setTableManagement(null)}>取消</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={tableAdminAction !== null} onOpenChange={(open) => !open && !tableActionBusy && setTableAdminAction(null)}>
         <AlertDialogContent size="sm">
@@ -310,39 +332,42 @@ export default function ChannelRoom({ user, initialSpace, initialTableID, onBack
   );
 }
 
-function TableMapTile({ table, blockedBySeat, onOpen, onClear, onDelete }: { table: TableSummary; blockedBySeat: boolean; onOpen: () => void; onClear?: () => void; onDelete?: () => void }) {
-  const available = table.player_count < table.max_players;
+function TableMapTile({ table, blockedBySeat, onOpen, onManage }: { table: TableSummary; blockedBySeat: boolean; onOpen: () => void; onManage?: () => void }) {
   const players = [...(table.players || [])].sort((a, b) => a.seat - b.seat);
   const playerNames = players.map((player) => player.name).join("、");
+  const stakeLabel = table.game_type === "landlord" ? `底分 ${money(table.base_stake_cents || 0)}` : `${money(table.small_blind_cents || 0)} / ${money(table.big_blind_cents || 0)}`;
+  const stateLabel = tableHandActive(table.street) ? "进行中" : table.player_count > 0 ? "等待开局" : "等待玩家";
+  const manageable = !!onManage;
   return (
     <div className="table-map-item group">
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" className="table-map-tile" disabled={blockedBySeat} onClick={onOpen} aria-label={`${table.name}，${table.player_count}/${table.max_players} 人${playerNames ? `，玩家 ${playerNames}` : "，空桌"}${blockedBySeat ? "，你已在其他牌桌" : ""}`}>
-            <span className="flex w-full min-w-0 items-center justify-between gap-2"><strong className="truncate text-sm">{tableDisplayName(table.name)}</strong><Badge className="shrink-0" variant={table.viewer_seated ? "default" : "outline"}>{table.player_count}/{table.max_players}</Badge></span>
-            <span className="table-map-stage">
-              <span className="table-map-surface"><strong>{table.game_type === "landlord" ? `底分 ${money(table.base_stake_cents || 0)}` : `${money(table.small_blind_cents || 0)}/${money(table.big_blind_cents || 0)}`}</strong><small>{available ? (table.player_count > 0 ? `${table.player_count} 人入座` : "等待入座") : "已满"}</small></span>
-              {players.map((player, index) => <MapSeat key={player.user_id} player={player} style={mapSeatStyle(index, players.length)} />)}
+            <span className={cn("flex w-full min-w-0 items-start justify-between gap-3", manageable && "pr-11")}>
+              <strong className="min-w-0 truncate text-sm">{tableDisplayName(table.name)}</strong>
+              <Badge className="shrink-0" variant={table.viewer_seated ? "default" : "outline"}>{table.player_count}/{table.max_players} 人</Badge>
             </span>
-            <span className={cn("flex w-full items-center justify-between gap-2 text-xs text-muted-foreground", onClear ? "pr-14" : onDelete && "pr-7")}><span className="truncate">{table.game_type === "landlord" ? "斗地主" : "德州扑克"} · {tableHandActive(table.street) ? "进行中" : table.player_count > 0 ? "等待开局" : "等待玩家"}</span><span className="shrink-0">{table.viewer_seated ? "你在此桌" : blockedBySeat ? "已在其他桌" : "点击进入"}</span></span>
+            <span className="flex w-full items-end justify-between gap-3">
+              <span className="flex min-w-0 flex-col gap-1">
+                <small className="text-xs font-normal text-muted-foreground">{table.game_type === "landlord" ? "本桌底分" : "小盲 / 大盲"}</small>
+                <strong className="truncate text-base tabular-nums">{stakeLabel}</strong>
+              </span>
+              <Badge className="shrink-0" variant="secondary">{stateLabel}</Badge>
+            </span>
+            <span className="flex w-full items-center justify-between gap-3 border-t pt-3 text-xs font-normal text-muted-foreground">
+              <span className="truncate">{playerNames ? `玩家：${playerNames}` : "暂无玩家"}</span>
+              <span className="shrink-0">{table.viewer_seated ? "你在此桌" : blockedBySeat ? "已在其他桌" : "可进入"}</span>
+            </span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>{blockedBySeat ? "请先离开当前牌桌" : playerNames ? `${playerNames} 正在这桌` : "空桌，点击入座"}</TooltipContent>
       </Tooltip>
-      {onClear && (
+      {manageable && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button size="icon-xs" variant="ghost" className="absolute right-14 bottom-2 min-h-11 min-w-11 opacity-100 transition-opacity lg:right-9 lg:min-h-6 lg:min-w-6 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100" onClick={onClear} aria-label={`清空牌桌 ${table.name}`}><Eraser /></Button>
+            <Button size="icon-sm" variant="ghost" className="absolute top-2 right-2 min-h-9 min-w-9 rounded-full opacity-100 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100" onClick={onManage} aria-label={`管理牌桌 ${table.name}`}><MoreHorizontal /></Button>
           </TooltipTrigger>
-          <TooltipContent side="top">结算全部玩家并清空牌桌</TooltipContent>
-        </Tooltip>
-      )}
-      {onDelete && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button size="icon-xs" variant="ghost" className="absolute right-2 bottom-2 min-h-11 min-w-11 opacity-100 transition-opacity lg:min-h-6 lg:min-w-6 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100" onClick={onDelete} aria-label={`删除牌桌 ${table.name}`}><Trash2 /></Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">{table.player_count > 0 ? "结算全部玩家并删除牌桌" : "删除牌桌"}</TooltipContent>
+          <TooltipContent side="top">管理牌桌</TooltipContent>
         </Tooltip>
       )}
     </div>
@@ -351,18 +376,6 @@ function TableMapTile({ table, blockedBySeat, onOpen, onClear, onDelete }: { tab
 
 function tableHandActive(street: string) {
   return street === "preflop" || street === "flop" || street === "turn" || street === "river" || street === "bidding" || street === "playing";
-}
-
-function MapSeat({ player, style }: { player: TableSeatSummary; style: CSSProperties }) {
-  return <span className="table-map-seat -translate-x-1/2 -translate-y-1/2" style={style}><Avatar size="sm"><AvatarFallback>{initials(player.name)}</AvatarFallback></Avatar><small>{player.name}</small></span>;
-}
-
-function mapSeatStyle(index: number, count: number): CSSProperties {
-  const angle = (90 + index * 360 / count) * Math.PI / 180;
-  return {
-    left: `${50 + 44 * Math.cos(angle)}%`,
-    top: `${50 + 42 * Math.sin(angle)}%`,
-  };
 }
 
 function CreateTableTile({ onCreate }: { onCreate: () => void }) {
@@ -488,7 +501,7 @@ function CreateTableDialog({ open, spaceID, gameType, onClose, onCreated }: { op
 }
 
 function TableSkeleton() {
-  return <div className="table-map-tile pointer-events-none"><Skeleton className="h-4 w-2/3" /><Skeleton className="aspect-[880/493] w-36 max-w-full self-center rounded-[999px]" /><Skeleton className="h-3 w-full" /></div>;
+  return <div className="table-map-tile pointer-events-none"><div className="flex items-center justify-between gap-3"><Skeleton className="h-8 w-24" /><Skeleton className="h-5 w-12" /></div><div className="flex items-end justify-between gap-3"><Skeleton className="h-10 w-28" /><Skeleton className="h-5 w-16" /></div><Skeleton className="h-4 w-full" /></div>;
 }
 
 function initials(name: string) {

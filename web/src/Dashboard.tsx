@@ -7,7 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -293,13 +293,13 @@ function ChannelPickerView({ spaces, loading, error, onCreate, onJoin, onOpenSpa
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
           {loading ? (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <SpaceSkeleton key={index} />)}</div>
+            <div className="lobby-channel-grid">{Array.from({ length: 3 }, (_, index) => <SpaceSkeleton key={index} />)}</div>
           ) : spaces.length === 0 ? (
             <Empty className="min-h-72 border bg-card">
               <EmptyHeader><EmptyMedia variant="icon"><RadioTower /></EmptyMedia><EmptyTitle>还没有频道</EmptyTitle><EmptyDescription>创建自己的频道，或者使用朋友发来的邀请码加入。</EmptyDescription></EmptyHeader>
             </Empty>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{spaces.map((space) => <SpaceCard key={space.id} space={space} onOpen={() => onOpenSpace(space)} />)}</div>
+            <div className="lobby-channel-grid">{spaces.map((space) => <SpaceCard key={space.id} space={space} onOpen={() => onOpenSpace(space)} />)}</div>
           )}
         </section>
       </div>
@@ -356,27 +356,19 @@ function LeaderboardSkeleton() {
 
 function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
   return (
-    <Card className="lobby-channel-card h-full [--card-spacing:--spacing(6)]">
-      <CardHeader>
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="game-room-avatar grid size-12 shrink-0 place-items-center rounded-xl font-heading text-lg font-semibold">{space.name.slice(0, 1).toUpperCase()}</span>
-          <div className="min-w-0"><CardTitle className="truncate text-lg">{space.name}</CardTitle><CardDescription>{space.can_manage ? "你管理的频道" : "朋友的频道"}</CardDescription></div>
-        </div>
-        <CardAction><Badge variant={space.can_manage ? "secondary" : "outline"}>{space.can_manage ? "管理员" : "成员"}</Badge></CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-1 items-end justify-between gap-4">
-        <p className="text-sm leading-6 text-muted-foreground">查看牌桌、在线牌友和频道排名。</p>
-        <RadioTower className="shrink-0 text-muted-foreground" />
-      </CardContent>
-      <CardFooter>
-        <Button className="min-h-11 w-full" size="lg" onClick={onOpen}>进入频道<ArrowRight data-icon="inline-end" /></Button>
-      </CardFooter>
-    </Card>
+    <Button variant="outline" className="lobby-channel-card h-auto min-h-20 w-full flex-col items-stretch justify-between gap-3 whitespace-normal rounded-xl p-4 text-left" onClick={onOpen} aria-label={`进入频道 ${space.name}`}>
+      <span className="flex w-full min-w-0 items-center gap-2">
+        <strong className="min-w-0 flex-1 truncate font-heading text-base">{space.name}</strong>
+        <Badge className="shrink-0" variant={space.can_manage ? "secondary" : "outline"}>{space.can_manage ? "管理员" : "成员"}</Badge>
+        <ArrowRight data-icon="inline-end" className="shrink-0 text-muted-foreground" />
+      </span>
+      <span className="text-xs leading-5 text-muted-foreground">{space.can_manage ? "管理牌桌、成员与频道设置" : "查看牌桌与频道排名"}</span>
+    </Button>
   );
 }
 
 function SpaceSkeleton() {
-  return <Card className="lobby-channel-card [--card-spacing:--spacing(6)]" aria-hidden="true"><CardHeader><div className="flex items-center gap-3"><Skeleton className="size-12 rounded-xl" /><div className="grid flex-1 gap-2"><Skeleton className="h-5 w-2/3" /><Skeleton className="h-3 w-1/2" /></div></div></CardHeader><CardContent><Skeleton className="h-10 w-full" /></CardContent><CardFooter><Skeleton className="h-10 w-full" /></CardFooter></Card>;
+  return <Card size="sm" className="lobby-channel-card min-h-20 justify-center" aria-hidden="true"><CardContent className="grid gap-2"><div className="flex items-center gap-2"><Skeleton className="h-5 flex-1" /><Skeleton className="h-5 w-14" /></div><Skeleton className="h-3 w-3/4" /></CardContent></Card>;
 }
 
 function SpaceDialog({ mode, onClose, onCreated }: { mode: "create" | "join"; onClose: () => void; onCreated: (space: Space) => void }) {

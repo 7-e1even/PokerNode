@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEventHandler } from "react";
-import { ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Crown, DoorOpen, LogOut, MoreHorizontal, Play, Spade, X } from "lucide-react";
+import { ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Crown, DoorOpen, LogOut, MoreHorizontal, Play, Spade } from "lucide-react";
 import { toast } from "sonner";
-import { Avatar, AvatarBadge, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
@@ -138,38 +138,55 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
     };
   }, [initialTable.id, snapshotGate, space.id]);
 
+  const actingPlayer = table?.players.find((player) => player.seat === table.acting_seat);
+
   return (
     <main className="table-room landlord-room flex h-svh min-h-0 flex-col overflow-hidden">
       <section className="table-room__canvas relative min-h-0 flex-1 overflow-hidden">
-        <div className="table-room-hud landlord-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 grid items-start gap-2">
-          <div className="table-room-hud__identity landlord-room-hud__identity pointer-events-auto flex min-w-0 items-center rounded-full border bg-background/90 p-1 pr-3 shadow-sm backdrop-blur-md">
-            <Button size="icon" variant="ghost" onClick={onBack} aria-label="返回频道"><ArrowLeft /></Button>
-            <BrandMark className="size-7 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 pl-1">
-              <h1 className="truncate font-heading text-sm font-semibold">{table?.name || initialTable.name}</h1>
-              <p className="hidden truncate text-xs text-muted-foreground md:block">斗地主 · 底分 {money(table?.base_stake_cents ?? initialTable.base_stake_cents ?? 0)}</p>
+        <div className="table-room-hud landlord-room-hud pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2">
+          <div className="landlord-room-hud__primary pointer-events-none flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <div className="table-room-hud__identity landlord-room-hud__identity pointer-events-auto flex min-w-0 items-center p-1 pr-3">
+              <Button className="rounded-full" size="icon" variant="ghost" onClick={onBack} aria-label="返回频道"><ArrowLeft /></Button>
+              <BrandMark className="size-7 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 pl-1">
+                <h1 className="truncate font-heading text-sm font-semibold">{table?.name || initialTable.name}</h1>
+                <p className="hidden truncate text-xs text-muted-foreground md:block">斗地主 · 底分 {money(table?.base_stake_cents ?? initialTable.base_stake_cents ?? 0)}</p>
+              </div>
             </div>
+
+            {table && (
+              <div className="table-room-hud__status landlord-room-hud__status pointer-events-auto flex items-center gap-2 whitespace-nowrap px-2 py-1" aria-live="polite">
+                <Badge variant="secondary">第 {table.hand_id || 1} 局</Badge>
+                <strong className="px-1 text-xs">{phaseLabel(table.phase)}</strong>
+                <Separator orientation="vertical" className="h-4" />
+                <span className="truncate text-xs text-muted-foreground">
+                  {table.acting_seat >= 0 ? `${actingPlayer?.name || "玩家"}行动` : table.phase === "waiting" ? `${table.players.length}/3 人已入座` : "等待下一局"}
+                </span>
+                {table.highest_bid > 0 && <Badge variant="outline" className="hidden sm:inline-flex">叫分 {table.highest_bid}</Badge>}
+                {table.multiplier > 1 && <Badge className="hidden sm:inline-flex">× {table.multiplier}</Badge>}
+              </div>
+            )}
           </div>
 
-          <div className="table-room-hud__actions landlord-room-hud__actions pointer-events-auto flex items-center gap-1 rounded-full border bg-background/90 p-1 shadow-sm backdrop-blur-md">
+          <div className="table-room-hud__actions landlord-room-hud__actions pointer-events-auto flex shrink-0 items-center gap-1">
             <Badge variant={connection === "live" ? "secondary" : connection === "offline" ? "destructive" : "outline"} className="hidden lg:inline-flex" aria-live="polite"><span className={cn("size-1.5 rounded-full", connection === "live" ? "bg-foreground" : "bg-current")} aria-hidden="true" />{connection === "live" ? "实时" : connection === "polling" ? "自动同步" : connection === "connecting" ? "连接中" : "已断开"}</Badge>
             {space.is_bound && (
-              <Button size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
+              <Button className="rounded-full" size="sm" variant="ghost" onClick={() => void loadBalance()} aria-label={balance ? `余额 ${money(balance.cents)}` : "刷新余额"}>
                 <CircleDollarSign data-icon="inline-start" />
                 <span className="hidden md:inline">{balance ? money(balance.cents) : "—"}</span>
               </Button>
             )}
+            <Button className="rounded-full" size="sm" variant="ghost" onClick={onBack} aria-label="离开牌桌">
+              <DoorOpen data-icon="inline-start" />
+              <span className="hidden sm:inline">离开牌桌</span>
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
+                <Button className="rounded-full" size="icon" variant="ghost" aria-label="更多牌桌操作"><MoreHorizontal /></Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuContent align="end" className="w-44">
                 <DropdownMenuGroup>
                   <DropdownMenuItem onSelect={() => setRulesOpen(true)}><CircleHelp />斗地主规则</DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={onBack}><DoorOpen />离开牌桌</DropdownMenuItem>
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -202,7 +219,6 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
   const seconds = useCountdown(table.action_deadline_at, table.turn_id);
   const viewer = table.players.find((player) => player.user_id === user.id);
   const seated = table.viewer_seat >= 0;
-  const acting = table.players.find((player) => player.seat === table.acting_seat);
   const opponents = table.players.filter((player) => player.user_id !== user.id);
   const selectedCards = (viewer?.cards || []).filter((card) => selected.includes(cardKey(card)));
   const viewerCards = [...(viewer?.cards || [])].sort((left, right) => right.rank - left.rank || right.suit - left.suit);
@@ -298,21 +314,16 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
 
   return (
     <div className="landlord-stage">
-      <div className="table-room-hud__status landlord-roundbar">
-        <div className="landlord-match-chips"><Badge variant="secondary">第 {table.hand_id || 1} 局</Badge><Badge variant="outline">{phaseLabel(table.phase)}</Badge>{table.highest_bid > 0 && <Badge variant="outline">叫分 {table.highest_bid}</Badge>}{table.multiplier > 1 && <Badge>× {table.multiplier}</Badge>}</div>
-        <span className="landlord-turn-status" data-active={table.acting_seat >= 0 ? "true" : undefined}><i aria-hidden="true" />{table.acting_seat >= 0 ? <><strong>{acting?.name || "玩家"}</strong><span>行动</span><Clock3 aria-hidden="true" /><b>{seconds ?? table.action_timeout_seconds}</b></> : waitingForDeal ? "等待玩家入座" : "等待下一局"}</span>
-      </div>
-
       {seated && table.phase !== "waiting" && <CardCounter counts={table.remaining_counts || {}} />}
 
       <div className="landlord-felt">
         <div className="landlord-table-mark" aria-hidden="true"><Crown /><span>POKERNODE</span></div>
 
         <div className="landlord-seat-position landlord-seat-position--left">
-          {opponents[0] ? <PlayerPanel player={opponents[0]} side="left" waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} /> : <PlayerPlaceholder label="等待左侧玩家" side="left" />}
+          {opponents[0] ? <PlayerPanel player={opponents[0]} side="left" waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} /> : <PlayerPlaceholder label="等待玩家" side="left" />}
         </div>
         <div className="landlord-seat-position landlord-seat-position--right">
-          {opponents[1] ? <PlayerPanel player={opponents[1]} side="right" waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} /> : <PlayerPlaceholder label="等待右侧玩家" side="right" />}
+          {opponents[1] ? <PlayerPanel player={opponents[1]} side="right" waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} /> : <PlayerPlaceholder label="等待玩家" side="right" />}
         </div>
 
         <div className="landlord-center-play">
@@ -321,7 +332,7 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
             <CardRow cards={bottomCards} hiddenCount={table.phase === "waiting" || (table.landlord_seat < 0 && table.phase === "bidding") ? 3 : 0} compact motion="reveal" animationKey={table.hand_id} />
           </div>
           <div className="landlord-last-play">
-            <span>{table.trick_open ? `${table.players.find((player) => player.seat === table.last_play_seat)?.name || "上一家"} 出牌` : "桌面出牌区"}</span>
+            {table.phase !== "waiting" && <span>{table.trick_open ? `${table.players.find((player) => player.seat === table.last_play_seat)?.name || "上一家"} 出牌` : "桌面出牌区"}</span>}
             {lastPlay.length > 0 ? <CardRow cards={lastPlay} compact motion="play" motionOrigin={lastPlayOrigin} animationKey={table.turn_id} /> : <strong>{table.phase === "waiting" ? "等待玩家加入" : "等待首家出牌"}</strong>}
           </div>
           {table.last_result && <Badge variant="secondary" className="landlord-result-banner">{table.last_result.message} · 每家 {money(table.last_result.stake_cents)}</Badge>}
@@ -333,7 +344,7 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
             <div className="landlord-hand" aria-label={`你的手牌，共 ${viewer.card_count} 张`}>
               <div className="landlord-hand-row" style={{ "--hand-count": Math.max(viewerCards.length, 1) } as CSSProperties} onPointerMove={(event) => { if (event.pointerType !== "mouse") continueTouchDrag(event.clientX, event.clientY); }}>
                 {viewerCards.map((card, index, cards) => <LandlordCard key={`${table.hand_id}:${cardKey(card)}`} card={card} selected={selected.includes(cardKey(card))} disabled={!table.allowed_actions.can_play || busy} onClick={() => clickCard(card)} onPointerDown={(event) => { if (event.button === 0) { event.preventDefault(); beginCardDrag(card); } }} onPointerEnter={(event) => continueCardDrag(card, event.buttons)} motion="deal" motionIndex={index} motionX={`${((cards.length - 1) / 2 - index) * 2.1}rem`} />)}
-                {viewer.card_count === 0 && <span className="landlord-hand-empty py-8 text-sm text-muted-foreground">{waitingForDeal ? `等待凑齐 3 人后发牌（${table.players.length}/3）` : table.phase === "complete" ? "本局手牌已出完" : "等待发牌"}</span>}
+                {viewer.card_count === 0 && !waitingForDeal && <span className="landlord-hand-empty py-8 text-sm text-muted-foreground">{table.phase === "complete" ? "本局手牌已出完" : "等待发牌"}</span>}
               </div>
             </div>
           </> : <div className="landlord-spectator-seat"><Spade /><span><strong>你的座位</strong><small>加入后，手牌会显示在这里</small></span></div>}
@@ -345,7 +356,7 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
         {seated && table.allowed_actions.can_bid && <><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid: 0 })}>不叫</Button>{[1, 2, 3].filter((bid) => bid >= table.allowed_actions.min_bid).map((bid) => <Button key={bid} size="lg" className="landlord-primary-action rounded-full" disabled={busy} onClick={() => void run("action", { action: "bid", bid })}>{bid} 分</Button>)}</>}
         {seated && table.allowed_actions.can_play && <><span className="landlord-selection-hint">按住牌面拖动多选</span><Badge variant="outline" className="landlord-action-timer"><Clock3 data-icon="inline-start" />{seconds ?? table.action_timeout_seconds}</Badge>{table.allowed_actions.can_pass && <Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("action", { action: "pass" })}>不出</Button>}<Button size="lg" className="landlord-primary-action min-w-28 rounded-full" disabled={busy || selectedCards.length === 0} onClick={() => void run("action", { action: "play", cards: selectedCards })}><Play data-icon="inline-start" />出牌 {selectedCards.length > 0 ? `(${selectedCards.length})` : ""}</Button></>}
         {seated && !table.allowed_actions.can_act && !table.can_start && table.can_leave && <><span className="px-2 text-sm text-muted-foreground">等待玩家 {table.players.length}/3</span><Button size="lg" variant="outline" className="rounded-full" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button></>}
-        {seated && table.can_start && <><div className="px-2 text-sm text-muted-foreground">{table.players.length < 3 ? `等待玩家 ${table.players.length}/3` : `已准备 ${table.players.filter((player) => player.ready).length}/3`}</div>{table.can_leave && <Button variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}<Button size="lg" variant={viewer?.ready ? "outline" : "default"} className={cn("rounded-full", !viewer?.ready && "landlord-primary-action")} disabled={busy} onClick={() => void run("ready")}>{busy ? <Spinner data-icon="inline-start" /> : viewer?.ready ? <X data-icon="inline-start" /> : <Check data-icon="inline-start" />}{busy ? "处理中…" : viewer?.ready ? "取消准备" : "准备"}</Button></>}
+        {seated && table.can_start && <><div className="px-2 text-sm text-muted-foreground">{viewer?.ready ? table.players.length < 3 ? `等待玩家 ${table.players.length}/3` : `等待其他玩家 · 已准备 ${table.players.filter((player) => player.ready).length}/3` : table.players.length < 3 ? `等待玩家 ${table.players.length}/3` : `已准备 ${table.players.filter((player) => player.ready).length}/3`}</div>{table.can_leave && <Button className="rounded-full" variant="ghost" disabled={busy} onClick={() => void run("leave", {}, true)}><LogOut data-icon="inline-start" />结算离桌</Button>}{!viewer?.ready && <Button size="lg" className="landlord-primary-action rounded-full" disabled={busy} onClick={() => void run("ready")}>{busy ? <Spinner data-icon="inline-start" /> : <Check data-icon="inline-start" />}{busy ? "处理中…" : "准备"}</Button>}</>}
       </div>
     </div>
   );
@@ -354,8 +365,7 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
 function PlayerPanel({ player, side, viewer = false, waitingForDeal = false, showReady = false }: { player: LandlordPlayer; side?: "left" | "right"; viewer?: boolean; waitingForDeal?: boolean; showReady?: boolean }) {
   return (
     <div className={cn("landlord-player", side ? `landlord-player--${side}` : "landlord-self-player", player.is_acting && "landlord-player--acting")}>
-      <div className="landlord-player-avatar-wrap"><Avatar size="lg" className="landlord-player-avatar"><AvatarFallback>{player.name.slice(0, 2).toUpperCase()}</AvatarFallback>{player.landlord && <AvatarBadge className="bg-winner text-winner-foreground" aria-label="地主" title="地主"><Crown aria-hidden="true" /></AvatarBadge>}</Avatar></div>
-      <div className="landlord-player-copy"><div><strong>{player.name}{viewer ? "（我）" : ""}</strong></div><p>{money(player.stack_cents)}{player.bid > 0 ? ` · ${player.bid} 分` : ""}</p></div>
+      <div className="landlord-player-copy"><div><strong>{player.name}{viewer ? "（我）" : ""}</strong>{player.landlord && <Badge variant="secondary" className="landlord-player-landlord" aria-label="地主"><Crown data-icon="inline-start" /><span>地主</span></Badge>}</div><p>{money(player.stack_cents)}{player.bid > 0 ? ` · ${player.bid} 分` : ""}</p></div>
       <div className="landlord-card-count" aria-label={waitingForDeal ? "等待发牌" : `剩余 ${player.card_count} 张`}><i aria-hidden="true" /><strong>{waitingForDeal ? "—" : player.card_count}</strong><span>{waitingForDeal ? "待发" : "张"}</span></div>
       {showReady && <Badge variant={player.ready ? "secondary" : "outline"} className="landlord-player-ready data-[ready=true]:border-success data-[ready=true]:bg-success data-[ready=true]:text-success-foreground" data-ready={player.ready ? "true" : undefined}>{player.ready ? "已准备" : "未准备"}</Badge>}
       {player.is_acting && <span className="landlord-player-turn">行动中</span>}
@@ -376,7 +386,7 @@ function CardCounter({ counts }: { counts: Record<string, number> }) {
 }
 
 function PlayerPlaceholder({ label, side }: { label: string; side: "left" | "right" }) {
-  return <div className={cn("landlord-player landlord-player--empty", `landlord-player--${side}`)}><div className="landlord-player-avatar-wrap"><Avatar size="lg" className="landlord-player-avatar"><AvatarFallback>?</AvatarFallback></Avatar></div><div className="landlord-player-copy"><strong>{label}</strong><p>空位</p></div><div className="landlord-card-count"><strong>—</strong><span>待发</span></div></div>;
+  return <div className={cn("landlord-player landlord-player--empty", `landlord-player--${side}`)}><div className="landlord-player-copy"><strong>{label}</strong><p>空位</p></div><div className="landlord-card-count"><strong>—</strong><span>待发</span></div></div>;
 }
 
 function CardRow({ cards, hiddenCount = 0, compact = false, motion, motionOrigin, animationKey = 0 }: { cards: GameCard[]; hiddenCount?: number; compact?: boolean; motion?: "play" | "reveal"; motionOrigin?: "left" | "right" | "self" | "center"; animationKey?: string | number }) {
