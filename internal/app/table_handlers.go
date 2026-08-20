@@ -436,9 +436,11 @@ func (s *Server) reserveTableJoin(ctx context.Context, spaceID, tableID string, 
 	}
 	existing, err := s.store.ReserveActiveTableSeat(ctx, userID, spaceID, tableID)
 	if errors.Is(err, store.ErrActiveTableSeat) && existing.Status == "active" {
-		if releaseErr := s.store.ReleaseTableSeat(ctx, existing.UserID, existing.SpaceID, existing.TableID); releaseErr == nil {
-			_, err = s.store.ReserveActiveTableSeat(ctx, userID, spaceID, tableID)
+		cleanupInFlight()
+		if existing.SpaceID == spaceID && existing.TableID == tableID {
+			return nil, &apiError{Status: http.StatusConflict, Message: "你已经在牌桌上"}
 		}
+		return nil, &apiError{Status: http.StatusConflict, Message: fmt.Sprintf("你已经在其他牌局中（频道 %s，牌桌 %s），请先离桌", existing.SpaceID, existing.TableID)}
 	}
 	if err != nil {
 		cleanupInFlight()

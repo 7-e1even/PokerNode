@@ -479,6 +479,10 @@ func TestPlayerCanOnlyJoinOneTableGlobally(t *testing.T) {
 		"game_type": "landlord", "name": "Other landlord", "base_stake_cents": 100,
 	}, http.StatusCreated, &otherLandlord)
 	otherLandlordPath := secondAppServer.URL + "/api/spaces/" + otherSpace.Space.ID + "/tables/" + otherLandlord.Table.ID
+	unseatedMainState, err := database.LoadTableState(context.Background(), created.Space.ID, mainTableID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var mcpKey struct {
 		Key string `json:"mcp_key"`
@@ -497,6 +501,29 @@ func TestPlayerCanOnlyJoinOneTableGlobally(t *testing.T) {
 	requestJSON(t, player, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusConflict, nil)
 	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_join_table", Arguments: joinArgs}); callErr != nil || result.IsError {
 		t.Fatalf("MCP could not join after handoff: result=%#v err=%v", result, callErr)
+	}
+	seatedMainState, err := database.LoadTableState(context.Background(), created.Space.ID, mainTableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveTableState(context.Background(), created.Space.ID, mainTableID, unseatedMainState); err != nil {
+		t.Fatal(err)
+	}
+	upstream.mu.Lock()
+	quotaBeforeRejectedJoin := upstream.quotas[1]
+	upstream.mu.Unlock()
+	landlordJoinArgs := map[string]any{"space_id": created.Space.ID, "table_id": landlordTable.Table.ID, "buy_in_cents": 2_000}
+	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_join_table", Arguments: landlordJoinArgs}); callErr == nil && !result.IsError {
+		t.Fatal("MCP replaced an active seat when the persisted table snapshot was stale")
+	}
+	upstream.mu.Lock()
+	quotaAfterRejectedJoin := upstream.quotas[1]
+	upstream.mu.Unlock()
+	if quotaAfterRejectedJoin != quotaBeforeRejectedJoin {
+		t.Fatalf("rejected MCP table switch changed quota: before=%d after=%d", quotaBeforeRejectedJoin, quotaAfterRejectedJoin)
+	}
+	if err := database.SaveTableState(context.Background(), created.Space.ID, mainTableID, seatedMainState); err != nil {
+		t.Fatal(err)
 	}
 	current, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_get_current_game", Arguments: map[string]any{}})
 	if callErr != nil || current.IsError {
