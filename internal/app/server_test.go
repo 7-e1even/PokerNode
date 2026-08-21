@@ -345,6 +345,26 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 
 	requestJSON(t, alice, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
 	requestJSON(t, bob, http.MethodPost, spacePath+"/table/join", map[string]int64{"buy_in_cents": 2_000}, http.StatusOK, nil)
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/2/amount", map[string]any{
+		"space_id": createResult.Space.ID, "net_cents": 0,
+	}, http.StatusOK, nil)
+	requestJSON(t, alice, http.MethodPut, appServer.URL+"/api/admin/rankings/1/amount", map[string]any{
+		"space_id": "", "net_cents": 0,
+	}, http.StatusOK, nil)
+	var leaderboard struct {
+		Entries []store.ChannelLeaderboardEntry `json:"leaderboard"`
+	}
+	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[0].NetCents != 0 || leaderboard.Entries[0].Sessions != 1 {
+		t.Fatalf("active buy-ins must not change settled leaderboard results: %#v", leaderboard.Entries)
+	}
+	if leaderboard.Entries[1].DisplayName != "Alice" || leaderboard.Entries[1].NetCents != 0 || leaderboard.Entries[1].Sessions != 0 {
+		t.Fatalf("active first session must remain unsettled: %#v", leaderboard.Entries[1])
+	}
+	requestJSON(t, bob, http.MethodGet, appServer.URL+"/api/leaderboard", nil, http.StatusOK, &leaderboard)
+	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].NetCents != 0 || leaderboard.Entries[0].Sessions != 1 || leaderboard.Entries[1].NetCents != 0 || leaderboard.Entries[1].Sessions != 0 {
+		t.Fatalf("active buy-ins must not affect all-channel settled results: %#v", leaderboard.Entries)
+	}
 	requestJSON(t, alice, http.MethodGet, spacePath+"/tables", nil, http.StatusOK, &tablesResult)
 	var mainTablePlayers []struct {
 		Name string `json:"name"`
@@ -448,9 +468,6 @@ func TestFullSpaceAndTableFlow(t *testing.T) {
 	}
 	if aliceQuota+bobQuota != 200_000_000 {
 		t.Fatal("player balances should be conserved")
-	}
-	var leaderboard struct {
-		Entries []store.ChannelLeaderboardEntry `json:"leaderboard"`
 	}
 	requestJSON(t, bob, http.MethodGet, spacePath+"/leaderboard", nil, http.StatusOK, &leaderboard)
 	if len(leaderboard.Entries) != 2 || leaderboard.Entries[0].DisplayName != "Bob" || leaderboard.Entries[0].NetCents != 50 || leaderboard.Entries[0].Sessions != 2 {
@@ -668,7 +685,7 @@ func TestPlayerCanOnlyJoinOneTableGlobally(t *testing.T) {
 		t.Fatalf("unexpected current game: %#v", currentOutput)
 	}
 	requestJSON(t, player, http.MethodPost, spacePath+"/table/leave", map[string]any{}, http.StatusConflict, nil)
-	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_leave_table", Arguments: map[string]any{"space_id": created.Space.ID, "table_id": mainTableID}}); callErr != nil || result.IsError {
+	if result, callErr := mcpSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "pokernode_leave_table", Arguments: map[string]any{}}); callErr != nil || result.IsError {
 		t.Fatalf("MCP could not leave during handoff: result=%#v err=%v", result, callErr)
 	}
 	requestJSON(t, player, http.MethodPut, appServer.URL+"/api/me/agent-control", map[string]bool{"enabled": false}, http.StatusOK, nil)

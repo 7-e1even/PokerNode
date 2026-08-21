@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,10 +13,32 @@ import (
 	"pokernode/internal/poker"
 )
 
-const serverVersion = "0.1.0"
+const (
+	serverVersion = "0.3.0"
+	currencyUSD   = "USD"
+	moneyToolHint = " All *_cents values are integer USD cents; divide by 100 for dollars (10000 = 100.00 USD)."
+)
 
 type Server struct {
-	api *APIClient
+	api      *APIClient
+	waits    *waitRegistry
+	identity string
+}
+
+type MoneySpec struct {
+	Currency string `json:"currency" jsonschema:"ISO 4217 currency code."`
+	Unit     string `json:"unit" jsonschema:"Unit used by every field ending in _cents."`
+	Scale    int    `json:"scale" jsonschema:"Number of cents in one USD; divide *_cents by this value for dollars."`
+}
+
+type KickVoteView struct {
+	TargetName       string `json:"target_name"`
+	InitiatorName    string `json:"initiator_name"`
+	YesCount         int    `json:"yes_count"`
+	RequiredYes      int    `json:"required_yes"`
+	ExpiresAt        int64  `json:"expires_at" jsonschema:"Unix time in milliseconds when the vote expires."`
+	TargetIsViewer   bool   `json:"target_is_viewer"`
+	CanCancelByReady bool   `json:"can_cancel_by_ready" jsonschema:"True when this player can cancel being removed by calling pokernode_ready before expiry."`
 }
 
 type ListChannelsInput struct{}
@@ -30,145 +52,109 @@ type ListTablesInput struct {
 }
 
 type ListTablesOutput struct {
-	Tables []tableSummary `json:"tables" jsonschema:"Poker tables in the channel."`
+	Money  MoneySpec      `json:"money"`
+	Tables []tableSummary `json:"tables" jsonschema:"Poker tables in the channel. Player rosters are intentionally omitted."`
 }
 
 type CurrentGameInput struct{}
 
-type TableInput struct {
-	SpaceID string `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
-	TableID string `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
-}
-
 type JoinTableInput struct {
 	SpaceID    string `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
 	TableID    string `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
-	BuyInCents int64  `json:"buy_in_cents" jsonschema:"Buy-in in integer cents, from 2000 through 100000."`
+	BuyInCents int64  `json:"buy_in_cents" jsonschema:"Buy-in in integer USD cents, NOT dollars. From 2000 through 100000; 2000 means 20.00 USD and 10000 means 100.00 USD."`
 }
 
 type ActInput struct {
-	SpaceID        string   `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
-	TableID        string   `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
 	Action         string   `json:"action" jsonschema:"For Texas Hold'em: fold, check, call, bet, raise, or all_in. For landlord: bid, play, or pass. Use only an allowed action."`
-	AmountCents    int64    `json:"amount_cents,omitempty" jsonschema:"Texas Hold'em only. For bet or raise, the total target bet in cents."`
+	AmountCents    int64    `json:"amount_cents,omitempty" jsonschema:"Texas Hold'em only. Integer USD cents, NOT dollars. For bet or raise, copy a total target from min_raise_to_cents through max_raise_to_cents; 600 means 6.00 USD, not 600 USD."`
 	Bid            int      `json:"bid,omitempty" jsonschema:"Landlord bid from 0 through 3. Zero means no bid."`
 	Cards          []string `json:"cards,omitempty" jsonschema:"Landlord cards to play using compact codes such as 3c, Td, 2s, SJ, or BJ."`
 	ExpectedTurnID uint64   `json:"expected_turn_id" jsonschema:"Required turn_id from the latest table state. The action is rejected if the turn has changed."`
 }
 
 type WaitForTurnInput struct {
-	SpaceID        string `json:"space_id" jsonschema:"Channel ID returned by pokernode_list_channels."`
-	TableID        string `json:"table_id" jsonschema:"Table ID returned by pokernode_list_tables."`
-	MaxWaitSeconds int    `json:"max_wait_seconds,omitempty" jsonschema:"How long to wait, from 1 through 60 seconds. Defaults to 25."`
-}
-
-type CardView struct {
-	Code string `json:"code" jsonschema:"Compact notation such as As, Td, 3c, SJ, or BJ."`
-	Rank int    `json:"rank" jsonschema:"Numeric game rank. Landlord uses 15 for two and 16/17 for the jokers."`
-	Suit string `json:"suit" jsonschema:"One of clubs, diamonds, hearts, spades, or joker."`
-}
-
-type PlayerView struct {
-	UserID           int64      `json:"user_id"`
-	Name             string     `json:"name"`
-	Seat             int        `json:"seat"`
-	StackCents       int64      `json:"stack_cents"`
-	BetCents         int64      `json:"bet_cents"`
-	Cards            []CardView `json:"cards,omitempty" jsonschema:"The viewer's hole cards, plus non-folded opponents' cards only after a showdown."`
-	InHand           bool       `json:"in_hand"`
-	Folded           bool       `json:"folded"`
-	AllIn            bool       `json:"all_in"`
-	Ready            bool       `json:"ready"`
-	IsDealer         bool       `json:"is_dealer"`
-	IsActing         bool       `json:"is_acting"`
-	LastAction       string     `json:"last_action,omitempty"`
-	LastActionAmount int64      `json:"last_action_amount_cents,omitempty"`
-	CardCount        int        `json:"card_count,omitempty"`
-	Landlord         bool       `json:"landlord,omitempty"`
-	Bid              int        `json:"bid,omitempty"`
-}
-
-type AllowedActionsView struct {
-	CanAct          bool  `json:"can_act"`
-	CanFold         bool  `json:"can_fold"`
-	CanCheck        bool  `json:"can_check"`
-	CanCall         bool  `json:"can_call"`
-	CanBet          bool  `json:"can_bet"`
-	CanRaise        bool  `json:"can_raise"`
-	CanAllIn        bool  `json:"can_all_in"`
-	ToCallCents     int64 `json:"to_call_cents"`
-	MinRaiseToCents int64 `json:"min_raise_to_cents" jsonschema:"Minimum total target for a bet or raise."`
-	MaxRaiseToCents int64 `json:"max_raise_to_cents" jsonschema:"Maximum total target for a bet or raise."`
-	CanBid          bool  `json:"can_bid,omitempty"`
-	MinBid          int   `json:"min_bid,omitempty"`
-	CanPlay         bool  `json:"can_play,omitempty"`
-	CanPass         bool  `json:"can_pass,omitempty"`
-}
-
-type PayoutView struct {
-	UserID      int64 `json:"user_id"`
-	AmountCents int64 `json:"amount_cents"`
-}
-
-type HandResultView struct {
-	HandID   int64        `json:"hand_id"`
-	PotCents int64        `json:"pot_cents"`
-	Message  string       `json:"message"`
-	Showdown bool         `json:"showdown"`
-	Payouts  []PayoutView `json:"payouts"`
-	Winner   string       `json:"winner,omitempty"`
-	Bid      int          `json:"bid,omitempty"`
-	Multiple int          `json:"multiplier,omitempty"`
-	Stake    int64        `json:"stake_cents,omitempty"`
-}
-
-type TableView struct {
-	GameType             string             `json:"game_type"`
-	ID                   string             `json:"id"`
-	Name                 string             `json:"name"`
-	SmallBlindCents      int64              `json:"small_blind_cents,omitempty"`
-	BigBlindCents        int64              `json:"big_blind_cents,omitempty"`
-	BaseStakeCents       int64              `json:"base_stake_cents,omitempty"`
-	HandID               int64              `json:"hand_id"`
-	Street               string             `json:"street"`
-	Board                []CardView         `json:"board"`
-	Bottom               []CardView         `json:"bottom,omitempty"`
-	LastPlay             []CardView         `json:"last_play,omitempty"`
-	LastCombination      string             `json:"last_combination,omitempty"`
-	HighestBid           int                `json:"highest_bid,omitempty"`
-	LandlordSeat         *int               `json:"landlord_seat,omitempty"`
-	Multiplier           int                `json:"multiplier,omitempty"`
-	PotCents             int64              `json:"pot_cents"`
-	CurrentBetCents      int64              `json:"current_bet_cents"`
-	DealerSeat           int                `json:"dealer_seat"`
-	SmallBlindSeat       int                `json:"small_blind_seat"`
-	BigBlindSeat         int                `json:"big_blind_seat"`
-	ActingSeat           int                `json:"acting_seat"`
-	ActionTimeoutSeconds int                `json:"action_timeout_seconds"`
-	ActionDeadlineAt     int64              `json:"action_deadline_at" jsonschema:"Unix time in milliseconds when the current action expires."`
-	TurnID               uint64             `json:"turn_id"`
-	ViewerSeat           int                `json:"viewer_seat" jsonschema:"The configured account's seat, or -1 when not seated."`
-	Players              []PlayerView       `json:"players"`
-	AllowedActions       AllowedActionsView `json:"allowed_actions"`
-	CanReady             bool               `json:"can_ready" jsonschema:"Whether the configured account may mark itself ready."`
-	CanLeave             bool               `json:"can_leave"`
-	LastResult           *HandResultView    `json:"last_result,omitempty"`
-}
-
-type TableOutput struct {
-	Table        TableView `json:"table"`
-	Notice       string    `json:"notice,omitempty"`
-	OperationID  string    `json:"operation_id,omitempty"`
-	SettledCents int64     `json:"settled_cents,omitempty"`
-	WaitTimedOut bool      `json:"wait_timed_out,omitempty"`
+	MaxWaitSeconds int `json:"max_wait_seconds,omitempty" jsonschema:"How long to wait, from 1 through 60 seconds. Defaults to 25."`
 }
 
 type CurrentGameOutput struct {
-	Active              bool       `json:"active" jsonschema:"Whether this player is currently seated at a table."`
-	AgentControlEnabled bool       `json:"agent_control_enabled" jsonschema:"Whether the player explicitly handed gameplay control to this Agent."`
-	SpaceID             string     `json:"space_id,omitempty"`
-	TableID             string     `json:"table_id,omitempty"`
-	Table               *TableView `json:"table,omitempty"`
+	Active              bool   `json:"active" jsonschema:"Whether this player is currently seated at a table."`
+	AgentControlEnabled bool   `json:"agent_control_enabled" jsonschema:"Whether the player explicitly handed gameplay control to this Agent."`
+	SpaceID             string `json:"space_id,omitempty"`
+	TableID             string `json:"table_id,omitempty"`
+}
+
+type CompactPlayerView struct {
+	Name             string   `json:"name"`
+	Seat             int      `json:"seat"`
+	StackCents       int64    `json:"stack_cents"`
+	BetCents         int64    `json:"bet_cents,omitempty"`
+	Cards            []string `json:"cards,omitempty" jsonschema:"Compact card codes."`
+	State            string   `json:"state" jsonschema:"One of waiting, ready, active, folded, or all_in."`
+	LastAction       string   `json:"last_action,omitempty"`
+	LastActionAmount int64    `json:"last_action_amount_cents,omitempty"`
+	CardCount        int      `json:"card_count,omitempty"`
+	Landlord         bool     `json:"landlord,omitempty"`
+	Bid              int      `json:"bid,omitempty"`
+}
+
+type DecisionView struct {
+	Money            MoneySpec           `json:"money"`
+	GameType         string              `json:"game_type"`
+	TableID          string              `json:"table_id"`
+	Status           string              `json:"status" jsonschema:"One of not_seated, your_turn, waiting, ready_required, or between_hands."`
+	HandID           int64               `json:"hand_id"`
+	Street           string              `json:"street"`
+	SmallBlindCents  int64               `json:"small_blind_cents,omitempty"`
+	BigBlindCents    int64               `json:"big_blind_cents,omitempty"`
+	BaseStakeCents   int64               `json:"base_stake_cents,omitempty"`
+	Board            []string            `json:"board,omitempty"`
+	Bottom           []string            `json:"bottom,omitempty"`
+	LastPlay         []string            `json:"last_play,omitempty"`
+	LastCombination  string              `json:"last_combination,omitempty"`
+	LastPlaySeat     *int                `json:"last_play_seat,omitempty"`
+	TrickOpen        bool                `json:"trick_open,omitempty"`
+	HighestBid       int                 `json:"highest_bid,omitempty"`
+	LandlordSeat     *int                `json:"landlord_seat,omitempty"`
+	Multiplier       int                 `json:"multiplier,omitempty"`
+	PotCents         int64               `json:"pot_cents,omitempty"`
+	CurrentBetCents  int64               `json:"current_bet_cents,omitempty"`
+	DealerSeat       *int                `json:"dealer_seat,omitempty"`
+	SmallBlindSeat   *int                `json:"small_blind_seat,omitempty"`
+	BigBlindSeat     *int                `json:"big_blind_seat,omitempty"`
+	ActingSeat       int                 `json:"acting_seat"`
+	ViewerSeat       int                 `json:"viewer_seat"`
+	ActionDeadlineAt int64               `json:"action_deadline_at,omitempty"`
+	TurnID           uint64              `json:"turn_id"`
+	Players          []CompactPlayerView `json:"players"`
+	LegalActions     []string            `json:"legal_actions,omitempty"`
+	ToCallCents      int64               `json:"to_call_cents,omitempty"`
+	MinRaiseToCents  int64               `json:"min_raise_to_cents,omitempty"`
+	MaxRaiseToCents  int64               `json:"max_raise_to_cents,omitempty"`
+	MinBid           int                 `json:"min_bid,omitempty"`
+	CanReady         bool                `json:"can_ready,omitempty"`
+	CanLeave         bool                `json:"can_leave,omitempty"`
+	KickVote         *KickVoteView       `json:"kick_vote,omitempty"`
+}
+
+type WaitOutput struct {
+	Code         string        `json:"code" jsonschema:"your_turn, ready_required, kick_vote, timeout, not_seated, wait_in_progress, or waiting."`
+	State        *DecisionView `json:"state,omitempty"`
+	TimedOut     bool          `json:"timed_out,omitempty"`
+	RetryAfterMS int           `json:"retry_after_ms,omitempty"`
+	NextTool     string        `json:"next_tool,omitempty"`
+}
+
+type MutationOutput struct {
+	OK            bool   `json:"ok"`
+	Code          string `json:"code" jsonschema:"Stable machine-readable outcome code."`
+	HandID        int64  `json:"hand_id,omitempty"`
+	TurnID        uint64 `json:"turn_id,omitempty"`
+	Notice        string `json:"notice,omitempty"`
+	OperationID   string `json:"operation_id,omitempty"`
+	SettledCents  int64  `json:"settled_cents,omitempty" jsonschema:"Integer USD cents; divide by 100 for dollars."`
+	Retryable     bool   `json:"retryable,omitempty"`
+	CurrentTurnID uint64 `json:"current_turn_id,omitempty"`
+	NextTool      string `json:"next_tool,omitempty"`
 }
 
 func New(api *APIClient) *mcp.Server {
@@ -176,7 +162,11 @@ func New(api *APIClient) *mcp.Server {
 }
 
 func newServer(api *APIClient, schemaCache *mcp.SchemaCache) *mcp.Server {
-	service := &Server{api: api}
+	return newServerForIdentity(api, schemaCache, nil, "")
+}
+
+func newServerForIdentity(api *APIClient, schemaCache *mcp.SchemaCache, waits *waitRegistry, identity string) *mcp.Server {
+	service := &Server{api: api, waits: waits, identity: identity}
 	var options *mcp.ServerOptions
 	if schemaCache != nil {
 		options = &mcp.ServerOptions{SchemaCache: schemaCache}
@@ -184,14 +174,13 @@ func newServer(api *APIClient, schemaCache *mcp.SchemaCache) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pokernode-mcp", Version: serverVersion}, options)
 
 	mcp.AddTool(server, readOnlyTool("pokernode_list_channels", "List channels available to the configured PokerNode player account."), service.listChannels)
-	mcp.AddTool(server, readOnlyTool("pokernode_get_current_game", "Return the single table where this player is currently seated, across all channels and game types."), service.getCurrentGame)
-	mcp.AddTool(server, readOnlyTool("pokernode_list_tables", "List game tables in a channel, including game type, seats, stakes, and whether this account is seated."), service.listTables)
-	mcp.AddTool(server, readOnlyTool("pokernode_get_table", "Read the current table from this player's perspective. Private hole cards are visible only when PokerNode permits them."), service.getTable)
-	mcp.AddTool(server, readOnlyTool("pokernode_wait_for_turn", "Wait until this player can act, the hand ends, or the timeout expires, then return the latest table state."), service.waitForTurn)
-	mcp.AddTool(server, writeTool("pokernode_join_table", "Buy in and join a table as the configured player. This moves quota into the poker stack.", true), service.joinTable)
-	mcp.AddTool(server, writeTool("pokernode_ready", "Mark the configured seated player ready. A hand starts automatically when every funded player is ready.", false), service.ready)
-	mcp.AddTool(server, writeTool("pokernode_act", "Take one legal game action. Read game_type and allowed_actions first. Landlord play uses compact card codes in cards.", true), service.act)
-	mcp.AddTool(server, writeTool("pokernode_leave_table", "Leave between hands and settle the remaining stack back to the configured player's quota balance.", true), service.leaveTable)
+	mcp.AddTool(server, readOnlyTool("pokernode_get_current_game", "Return this player's active table location and hosted-control status. Call pokernode_wait_for_turn for decision state."), service.getCurrentGame)
+	mcp.AddTool(server, readOnlyTool("pokernode_list_tables", "List compact table summaries in a channel. Player rosters are omitted."+moneyToolHint), service.listTables)
+	mcp.AddTool(server, readOnlyTool("pokernode_wait_for_turn", "Wait on this player's active table for a decision, readiness, removal vote, seat removal, or timeout; returns compact authoritative state."+moneyToolHint), service.waitForTurn)
+	mcp.AddTool(server, writeTool("pokernode_join_table", "Buy in and join a table. Returns a small receipt; call pokernode_wait_for_turn next."+moneyToolHint, true), service.joinTable)
+	mcp.AddTool(server, writeTool("pokernode_ready", "Mark this player ready at the active table. Returns a small receipt; call pokernode_wait_for_turn next."+moneyToolHint, false), service.ready)
+	mcp.AddTool(server, writeTool("pokernode_act", "Take one legal action at the active table using the latest nonzero expected_turn_id. Returns a small receipt; call pokernode_wait_for_turn next."+moneyToolHint, true), service.act)
+	mcp.AddTool(server, writeTool("pokernode_leave_table", "Leave the active table between hands and settle the remaining stack back to quota."+moneyToolHint, true), service.leaveTable)
 	return server
 }
 
@@ -211,9 +200,11 @@ func writeTool(name, description string, destructive bool) *mcp.Tool {
 
 func boolPointer(value bool) *bool { return &value }
 
+func intPointer(value int) *int { return &value }
+
 func (s *Server) listChannels(ctx context.Context, _ *mcp.CallToolRequest, _ ListChannelsInput) (*mcp.CallToolResult, ListChannelsOutput, error) {
 	channels, err := s.api.listChannels(ctx)
-	return nil, ListChannelsOutput{Channels: channels}, err
+	return textResult(fmt.Sprintf("%d channel(s)", len(channels))), ListChannelsOutput{Channels: channels}, err
 }
 
 func (s *Server) getCurrentGame(ctx context.Context, _ *mcp.CallToolRequest, _ CurrentGameInput) (*mcp.CallToolResult, CurrentGameOutput, error) {
@@ -222,11 +213,18 @@ func (s *Server) getCurrentGame(ctx context.Context, _ *mcp.CallToolRequest, _ C
 		return nil, CurrentGameOutput{}, err
 	}
 	output := CurrentGameOutput{Active: current.Active, AgentControlEnabled: current.AgentControlEnabled, SpaceID: current.SpaceID, TableID: current.TableID}
-	if current.Active {
-		table := tableOutput(current.Table, "").Table
-		output.Table = &table
+	return textResult(currentGameSummary(output)), output, nil
+}
+
+func (s *Server) activeGame(ctx context.Context) (currentGame, error) {
+	current, err := s.api.getCurrentGame(ctx)
+	if err != nil {
+		return currentGame{}, err
 	}
-	return nil, output, nil
+	if !current.Active {
+		return currentGame{}, errors.New("the configured player is not seated; call pokernode_get_current_game, then join a table if needed")
+	}
+	return current, nil
 }
 
 func (s *Server) listTables(ctx context.Context, _ *mcp.CallToolRequest, input ListTablesInput) (*mcp.CallToolResult, ListTablesOutput, error) {
@@ -234,107 +232,133 @@ func (s *Server) listTables(ctx context.Context, _ *mcp.CallToolRequest, input L
 		return nil, ListTablesOutput{}, err
 	}
 	tables, err := s.api.listTables(ctx, input.SpaceID)
-	return nil, ListTablesOutput{Tables: tables}, err
+	return textResult(fmt.Sprintf("%d compact table summary(s)", len(tables))), ListTablesOutput{Money: usdMoney(), Tables: tables}, err
 }
 
-func (s *Server) getTable(ctx context.Context, _ *mcp.CallToolRequest, input TableInput) (*mcp.CallToolResult, TableOutput, error) {
-	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
-	}
-	envelope, err := s.api.getTable(ctx, input.SpaceID, input.TableID)
-	return nil, tableOutput(envelope.Table, envelope.Notice), err
-}
-
-func (s *Server) waitForTurn(ctx context.Context, _ *mcp.CallToolRequest, input WaitForTurnInput) (*mcp.CallToolResult, TableOutput, error) {
-	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
-	}
+func (s *Server) waitForTurn(ctx context.Context, _ *mcp.CallToolRequest, input WaitForTurnInput) (*mcp.CallToolResult, WaitOutput, error) {
 	wait := input.MaxWaitSeconds
 	if wait == 0 {
 		wait = 25
 	}
 	if wait < 1 || wait > 60 {
-		return nil, TableOutput{}, errors.New("max_wait_seconds must be between 1 and 60")
+		return nil, WaitOutput{}, errors.New("max_wait_seconds must be between 1 and 60")
+	}
+	cooldown := time.Duration(0)
+	if s.waits != nil && s.identity != "" {
+		release, retryAfter, ok := s.waits.acquire(s.identity)
+		if !ok {
+			output := WaitOutput{Code: "wait_in_progress", RetryAfterMS: retryAfter, NextTool: "pokernode_wait_for_turn"}
+			return errorResult("Another wait is active or cooling down; retry after the returned delay."), output, nil
+		}
+		defer func() { release(cooldown) }()
+	}
+	current, err := s.api.getCurrentGame(ctx)
+	if err != nil {
+		return nil, WaitOutput{}, err
+	}
+	if !current.Active {
+		cooldown = 5 * time.Second
+		state := decisionView(gameSnapshot{}, nil)
+		output := WaitOutput{Code: "not_seated", State: &state, RetryAfterMS: 5000, NextTool: "pokernode_get_current_game"}
+		return errorResult("Player is not seated. Stop waiting and call pokernode_get_current_game."), output, nil
+	}
+	envelope, err := s.api.getTable(ctx, current.SpaceID, current.TableID)
+	if err != nil {
+		return nil, WaitOutput{}, err
 	}
 	timer := time.NewTimer(time.Duration(wait) * time.Second)
 	defer timer.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		envelope, err := s.api.getTable(ctx, input.SpaceID, input.TableID)
-		if err != nil {
-			return nil, TableOutput{}, err
-		}
+		state := decisionView(envelope.Table, envelope.KickVote)
 		if snapshotViewerSeat(envelope.Table) < 0 {
-			return nil, TableOutput{}, errors.New("the configured player is not seated at this table; call pokernode_join_table first")
+			cooldown = 5 * time.Second
+			output := WaitOutput{Code: "not_seated", State: &state, RetryAfterMS: 5000, NextTool: "pokernode_get_current_game"}
+			return errorResult("Player is no longer seated. Stop waiting and call pokernode_get_current_game."), output, nil
 		}
-		if snapshotCanAct(envelope.Table) || !snapshotHandActive(envelope.Table) {
-			return nil, tableOutput(envelope.Table, envelope.Notice), nil
+		if state.KickVote != nil && state.KickVote.TargetIsViewer {
+			output := WaitOutput{Code: "kick_vote", State: &state, NextTool: "pokernode_ready"}
+			return textResult("Removal vote targets this player; call pokernode_ready before it expires."), output, nil
+		}
+		if snapshotCanAct(envelope.Table) {
+			return textResult(decisionSummary(state)), WaitOutput{Code: "your_turn", State: &state, NextTool: "pokernode_act"}, nil
+		}
+		if !snapshotHandActive(envelope.Table) && snapshotCanReady(envelope.Table) && !snapshotViewerReady(envelope.Table) {
+			return textResult("Player must ready for the next hand."), WaitOutput{Code: "ready_required", State: &state, NextTool: "pokernode_ready"}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, TableOutput{}, ctx.Err()
+			return nil, WaitOutput{}, ctx.Err()
 		case <-timer.C:
-			output := tableOutput(envelope.Table, envelope.Notice)
-			output.WaitTimedOut = true
-			return nil, output, nil
+			cooldown = time.Second
+			output := WaitOutput{Code: "timeout", State: &state, TimedOut: true, RetryAfterMS: 1000, NextTool: "pokernode_wait_for_turn"}
+			return textResult("No relevant state change before timeout; retry after 1000 ms."), output, nil
 		case <-ticker.C:
+			envelope, err = s.api.getTable(ctx, current.SpaceID, current.TableID)
+			if err != nil {
+				return nil, WaitOutput{}, err
+			}
 		}
 	}
 }
 
-func (s *Server) joinTable(ctx context.Context, _ *mcp.CallToolRequest, input JoinTableInput) (*mcp.CallToolResult, TableOutput, error) {
+func (s *Server) joinTable(ctx context.Context, _ *mcp.CallToolRequest, input JoinTableInput) (*mcp.CallToolResult, MutationOutput, error) {
 	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
+		return nil, MutationOutput{}, err
 	}
 	if input.BuyInCents < 2_000 || input.BuyInCents > 100_000 {
-		return nil, TableOutput{}, errors.New("buy_in_cents must be between 2000 and 100000")
+		return nil, MutationOutput{}, errors.New("buy_in_cents must be between 2000 (20.00 USD) and 100000 (1000.00 USD)")
 	}
 	table, operationID, err := s.api.joinTable(ctx, input.SpaceID, input.TableID, input.BuyInCents)
-	output := tableOutput(table, "")
+	output := mutationOutput("joined", table, "")
 	output.OperationID = operationID
-	return nil, output, err
+	return textResult("Joined table; call pokernode_wait_for_turn next."), output, err
 }
 
-func (s *Server) ready(ctx context.Context, _ *mcp.CallToolRequest, input TableInput) (*mcp.CallToolResult, TableOutput, error) {
-	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
-	}
-	envelope, err := s.api.ready(ctx, input.SpaceID, input.TableID)
-	return nil, tableOutput(envelope.Table, envelope.Notice), err
-}
-
-func (s *Server) act(ctx context.Context, _ *mcp.CallToolRequest, input ActInput) (*mcp.CallToolResult, TableOutput, error) {
-	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
-	}
-	current, err := s.api.getTable(ctx, input.SpaceID, input.TableID)
+func (s *Server) ready(ctx context.Context, _ *mcp.CallToolRequest, _ CurrentGameInput) (*mcp.CallToolResult, MutationOutput, error) {
+	current, err := s.activeGame(ctx)
 	if err != nil {
-		return nil, TableOutput{}, err
+		return nil, MutationOutput{}, err
+	}
+	envelope, err := s.api.ready(ctx, current.SpaceID, current.TableID)
+	output := mutationOutput("ready", envelope.Table, envelope.Notice)
+	return textResult("Ready accepted; call pokernode_wait_for_turn next."), output, err
+}
+
+func (s *Server) act(ctx context.Context, _ *mcp.CallToolRequest, input ActInput) (*mcp.CallToolResult, MutationOutput, error) {
+	current, err := s.activeGame(ctx)
+	if err != nil {
+		return nil, MutationOutput{}, err
 	}
 	if input.ExpectedTurnID == 0 {
-		return nil, TableOutput{}, errors.New("expected_turn_id is required; call pokernode_get_table or pokernode_wait_for_turn and use its current turn_id")
+		return nil, MutationOutput{}, errors.New("expected_turn_id is required; call pokernode_wait_for_turn and use its current turn_id")
 	}
 	if input.ExpectedTurnID != snapshotTurnID(current.Table) {
-		return nil, tableOutput(current.Table, ""), errors.New("the turn has changed; use the returned current table state and decide again")
+		output := mutationOutput("stale_turn", current.Table, "")
+		output.OK = false
+		output.Retryable = true
+		output.CurrentTurnID = snapshotTurnID(current.Table)
+		output.NextTool = "pokernode_wait_for_turn"
+		return errorResult("Turn changed; call pokernode_wait_for_turn and decide from the new state."), output, nil
 	}
 	request := gameActionRequest{Action: input.Action, Amount: input.AmountCents, Bid: input.Bid, ExpectedTurnID: input.ExpectedTurnID}
 	if current.Table.GameType == landlord.GameType {
 		if input.Action != string(landlord.ActionBid) && input.Action != string(landlord.ActionPlay) && input.Action != string(landlord.ActionPass) {
-			return nil, TableOutput{}, errors.New("landlord action must be bid, play, or pass")
+			return nil, MutationOutput{}, errors.New("landlord action must be bid, play, or pass")
 		}
 		if input.Action == string(landlord.ActionBid) && (input.Bid < 0 || input.Bid > 3) {
-			return nil, TableOutput{}, errors.New("bid must be from 0 through 3")
+			return nil, MutationOutput{}, errors.New("bid must be from 0 through 3")
 		}
 		if input.Action == string(landlord.ActionPlay) {
 			if len(input.Cards) == 0 {
-				return nil, TableOutput{}, errors.New("cards is required for a landlord play action")
+				return nil, MutationOutput{}, errors.New("cards is required for a landlord play action")
 			}
 			request.Cards = make([]landlord.Card, 0, len(input.Cards))
 			for _, code := range input.Cards {
 				card, parseErr := parseLandlordCard(code)
 				if parseErr != nil {
-					return nil, TableOutput{}, parseErr
+					return nil, MutationOutput{}, parseErr
 				}
 				request.Cards = append(request.Cards, card)
 			}
@@ -342,25 +366,27 @@ func (s *Server) act(ctx context.Context, _ *mcp.CallToolRequest, input ActInput
 	} else {
 		action := poker.ActionType(input.Action)
 		if !validAction(action) {
-			return nil, TableOutput{}, errors.New("Texas Hold'em action must be fold, check, call, bet, raise, or all_in")
+			return nil, MutationOutput{}, errors.New("Texas Hold'em action must be fold, check, call, bet, raise, or all_in")
 		}
 		if (action == poker.ActionBet || action == poker.ActionRaise) && input.AmountCents <= 0 {
-			return nil, TableOutput{}, errors.New("amount_cents must be a positive total target for bet or raise")
+			return nil, MutationOutput{}, errors.New("amount_cents must be a positive total target for bet or raise")
 		}
 	}
-	envelope, err := s.api.act(ctx, input.SpaceID, input.TableID, request)
-	return nil, tableOutput(envelope.Table, envelope.Notice), err
+	envelope, err := s.api.act(ctx, current.SpaceID, current.TableID, request)
+	output := mutationOutput("action_applied", envelope.Table, envelope.Notice)
+	return textResult("Action applied; call pokernode_wait_for_turn next."), output, err
 }
 
-func (s *Server) leaveTable(ctx context.Context, _ *mcp.CallToolRequest, input TableInput) (*mcp.CallToolResult, TableOutput, error) {
-	if err := requireIDs(input.SpaceID, input.TableID); err != nil {
-		return nil, TableOutput{}, err
+func (s *Server) leaveTable(ctx context.Context, _ *mcp.CallToolRequest, _ CurrentGameInput) (*mcp.CallToolResult, MutationOutput, error) {
+	current, err := s.activeGame(ctx)
+	if err != nil {
+		return nil, MutationOutput{}, err
 	}
-	table, operationID, settled, err := s.api.leaveTable(ctx, input.SpaceID, input.TableID)
-	output := tableOutput(table, "")
+	table, operationID, settled, err := s.api.leaveTable(ctx, current.SpaceID, current.TableID)
+	output := mutationOutput("left", table, "")
 	output.OperationID = operationID
 	output.SettledCents = settled
-	return nil, output, err
+	return textResult("Left table and settled the remaining stack in USD cents."), output, err
 }
 
 func requireIDs(ids ...string) error {
@@ -381,90 +407,293 @@ func validAction(action poker.ActionType) bool {
 	}
 }
 
-func tableOutput(snapshot gameSnapshot, notice string) TableOutput {
+func usdMoney() MoneySpec {
+	return MoneySpec{Currency: currencyUSD, Unit: "cent", Scale: 100}
+}
+
+func textResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+func errorResult(text string) *mcp.CallToolResult {
+	result := textResult(text)
+	result.IsError = true
+	return result
+}
+
+func currentGameSummary(output CurrentGameOutput) string {
+	if !output.Active {
+		return fmt.Sprintf("No active table; agent_control_enabled=%t.", output.AgentControlEnabled)
+	}
+	return fmt.Sprintf("Active table %s; call pokernode_wait_for_turn for compact decision state.", output.TableID)
+}
+
+func decisionSummary(state DecisionView) string {
+	return fmt.Sprintf("status=%s hand_id=%d turn_id=%d; structured state contains the authoritative details.", state.Status, state.HandID, state.TurnID)
+}
+
+func mutationOutput(code string, snapshot gameSnapshot, notice string) MutationOutput {
+	return MutationOutput{
+		OK: true, Code: code, HandID: snapshotHandID(snapshot), TurnID: snapshotTurnID(snapshot),
+		Notice: notice, NextTool: "pokernode_wait_for_turn",
+	}
+}
+
+func decisionView(snapshot gameSnapshot, vote *wireKickVote) DecisionView {
 	if snapshot.Landlord != nil {
-		return landlordTableOutput(*snapshot.Landlord, notice)
+		return landlordDecisionView(*snapshot.Landlord, enrichKickVote(vote, snapshot))
 	}
-	if snapshot.Poker == nil {
-		return TableOutput{Notice: notice}
+	if snapshot.Poker != nil {
+		return pokerDecisionView(*snapshot.Poker, enrichKickVote(vote, snapshot))
 	}
-	return pokerTableOutput(*snapshot.Poker, notice)
+	return DecisionView{Money: usdMoney(), Status: "not_seated", ViewerSeat: -1}
 }
 
-func pokerTableOutput(snapshot poker.Snapshot, notice string) TableOutput {
-	players := make([]PlayerView, 0, len(snapshot.Players))
+func pokerDecisionView(snapshot poker.Snapshot, vote *KickVoteView) DecisionView {
+	players := make([]CompactPlayerView, 0, len(snapshot.Players))
 	for _, player := range snapshot.Players {
-		players = append(players, PlayerView{
-			UserID: player.UserID, Name: player.Name, Seat: player.Seat, StackCents: player.Stack,
-			BetCents: player.Bet, Cards: cardViews(player.Cards), InHand: player.InHand,
-			Folded: player.Folded, AllIn: player.AllIn, Ready: player.Ready, IsDealer: player.IsDealer,
-			IsActing: player.IsActing, LastAction: string(player.LastAction), LastActionAmount: player.LastActionAmount,
+		players = append(players, CompactPlayerView{
+			Name: player.Name, Seat: player.Seat, StackCents: player.Stack, BetCents: player.Bet,
+			Cards: pokerCardCodes(player.Cards), State: pokerPlayerState(player), LastAction: string(player.LastAction),
+			LastActionAmount: player.LastActionAmount,
 		})
 	}
-	allowed := snapshot.Allowed
-	view := TableView{
-		GameType: poker.GameType, ID: snapshot.ID, Name: snapshot.Name, SmallBlindCents: snapshot.SmallBlind, BigBlindCents: snapshot.BigBlind,
-		HandID: snapshot.HandID, Street: string(snapshot.Street), Board: cardViews(snapshot.Board), PotCents: snapshot.Pot,
-		CurrentBetCents: snapshot.CurrentBet, DealerSeat: snapshot.DealerSeat, SmallBlindSeat: snapshot.SmallBlindSeat,
-		BigBlindSeat: snapshot.BigBlindSeat, ActingSeat: snapshot.ActingSeat, ActionTimeoutSeconds: snapshot.ActionTimeoutSeconds,
-		ActionDeadlineAt: snapshot.ActionDeadlineAt, TurnID: snapshot.TurnID, ViewerSeat: snapshot.ViewerSeat,
-		Players: players, CanReady: snapshot.CanStart, CanLeave: snapshot.CanLeave,
-		AllowedActions: AllowedActionsView{
-			CanAct: allowed.CanAct, CanFold: allowed.CanFold, CanCheck: allowed.CanCheck, CanCall: allowed.CanCall,
-			CanBet: allowed.CanBet, CanRaise: allowed.CanRaise, CanAllIn: allowed.CanAllIn, ToCallCents: allowed.ToCall,
-			MinRaiseToCents: allowed.MinRaiseTo, MaxRaiseToCents: allowed.MaxRaiseTo,
-		},
+	state := DecisionView{
+		Money: usdMoney(), GameType: poker.GameType, TableID: snapshot.ID, HandID: snapshot.HandID,
+		Street: string(snapshot.Street), SmallBlindCents: snapshot.SmallBlind, BigBlindCents: snapshot.BigBlind,
+		Board: pokerCardCodes(snapshot.Board), PotCents: snapshot.Pot,
+		CurrentBetCents: snapshot.CurrentBet, DealerSeat: intPointer(snapshot.DealerSeat), SmallBlindSeat: intPointer(snapshot.SmallBlindSeat),
+		BigBlindSeat: intPointer(snapshot.BigBlindSeat), ActingSeat: snapshot.ActingSeat, ViewerSeat: snapshot.ViewerSeat,
+		ActionDeadlineAt: snapshot.ActionDeadlineAt, TurnID: snapshot.TurnID, Players: players,
+		LegalActions: pokerLegalActions(snapshot.Allowed), ToCallCents: snapshot.Allowed.ToCall,
+		MinRaiseToCents: snapshot.Allowed.MinRaiseTo, MaxRaiseToCents: snapshot.Allowed.MaxRaiseTo,
+		CanReady: snapshot.CanStart, CanLeave: snapshot.CanLeave, KickVote: vote,
 	}
-	if snapshot.LastResult != nil {
-		payouts := make([]PayoutView, 0, len(snapshot.LastResult.Payouts))
-		for userID, amount := range snapshot.LastResult.Payouts {
-			payouts = append(payouts, PayoutView{UserID: userID, AmountCents: amount})
-		}
-		sort.Slice(payouts, func(i, j int) bool { return payouts[i].UserID < payouts[j].UserID })
-		view.LastResult = &HandResultView{
-			HandID: snapshot.LastResult.HandID, PotCents: snapshot.LastResult.Pot, Message: snapshot.LastResult.Message,
-			Showdown: snapshot.LastResult.Showdown, Payouts: payouts,
-		}
-	}
-	return TableOutput{Table: view, Notice: notice}
+	state.Status = decisionStatus(gameSnapshot{GameType: poker.GameType, Poker: &snapshot})
+	return state
 }
 
-func landlordTableOutput(snapshot landlord.Snapshot, notice string) TableOutput {
-	players := make([]PlayerView, 0, len(snapshot.Players))
+func landlordDecisionView(snapshot landlord.Snapshot, vote *KickVoteView) DecisionView {
+	players := make([]CompactPlayerView, 0, len(snapshot.Players))
+	active := snapshot.Phase == landlord.PhaseBidding || snapshot.Phase == landlord.PhasePlaying
 	for _, player := range snapshot.Players {
-		players = append(players, PlayerView{
-			UserID: player.UserID, Name: player.Name, Seat: player.Seat, StackCents: player.Stack,
-			Cards: landlordCardViews(player.Cards), CardCount: player.CardCount, Ready: player.Ready,
-			Landlord: player.Landlord, Bid: player.Bid, IsActing: player.IsActing,
+		players = append(players, CompactPlayerView{
+			Name: player.Name, Seat: player.Seat, StackCents: player.Stack, Cards: landlordCardCodes(player.Cards),
+			State: landlordPlayerState(player, active), CardCount: player.CardCount, Landlord: player.Landlord, Bid: player.Bid,
 		})
 	}
-	allowed := snapshot.Allowed
-	view := TableView{
-		GameType: landlord.GameType, ID: snapshot.ID, Name: snapshot.Name, BaseStakeCents: snapshot.BaseStake,
-		HandID: snapshot.HandID, Street: string(snapshot.Phase), Bottom: landlordCardViews(snapshot.Bottom),
-		LastPlay: landlordCardViews(snapshot.LastPlay), LastCombination: string(snapshot.LastCombination.Kind),
+	state := DecisionView{
+		Money: usdMoney(), GameType: landlord.GameType, TableID: snapshot.ID, HandID: snapshot.HandID,
+		Street: string(snapshot.Phase), BaseStakeCents: snapshot.BaseStake,
+		Bottom: landlordCardCodes(snapshot.Bottom), LastPlay: landlordCardCodes(snapshot.LastPlay),
+		LastCombination: string(snapshot.LastCombination.Kind), LastPlaySeat: intPointer(snapshot.LastPlaySeat), TrickOpen: snapshot.TrickOpen,
 		HighestBid: snapshot.HighestBid, LandlordSeat: &snapshot.LandlordSeat, Multiplier: snapshot.Multiplier,
-		ActingSeat: snapshot.ActingSeat, ActionTimeoutSeconds: snapshot.ActionTimeoutSeconds,
-		ActionDeadlineAt: snapshot.ActionDeadlineAt, TurnID: snapshot.TurnID, ViewerSeat: snapshot.ViewerSeat,
-		Players: players, CanReady: snapshot.CanStart, CanLeave: snapshot.CanLeave,
-		AllowedActions: AllowedActionsView{
-			CanAct: allowed.CanAct, CanBid: allowed.CanBid, MinBid: allowed.MinBid,
-			CanPlay: allowed.CanPlay, CanPass: allowed.CanPass,
-		},
+		ActingSeat: snapshot.ActingSeat, ViewerSeat: snapshot.ViewerSeat, ActionDeadlineAt: snapshot.ActionDeadlineAt,
+		TurnID: snapshot.TurnID, Players: players, LegalActions: landlordLegalActions(snapshot.Allowed), MinBid: snapshot.Allowed.MinBid,
+		CanReady: snapshot.CanStart, CanLeave: snapshot.CanLeave, KickVote: vote,
 	}
-	if snapshot.LastResult != nil {
-		payouts := make([]PayoutView, 0, len(snapshot.LastResult.Payouts))
-		for userID, amount := range snapshot.LastResult.Payouts {
-			payouts = append(payouts, PayoutView{UserID: userID, AmountCents: amount})
-		}
-		sort.Slice(payouts, func(i, j int) bool { return payouts[i].UserID < payouts[j].UserID })
-		view.LastResult = &HandResultView{
-			HandID: snapshot.LastResult.HandID, Message: snapshot.LastResult.Message, Payouts: payouts,
-			Winner: snapshot.LastResult.Winner, Bid: snapshot.LastResult.Bid,
-			Multiple: snapshot.LastResult.Multiplier, Stake: snapshot.LastResult.Stake,
+	state.Status = decisionStatus(gameSnapshot{GameType: landlord.GameType, Landlord: &snapshot})
+	return state
+}
+
+func decisionStatus(snapshot gameSnapshot) string {
+	if snapshotViewerSeat(snapshot) < 0 {
+		return "not_seated"
+	}
+	if snapshotCanAct(snapshot) {
+		return "your_turn"
+	}
+	if snapshotHandActive(snapshot) {
+		return "waiting"
+	}
+	if snapshotCanReady(snapshot) && !snapshotViewerReady(snapshot) {
+		return "ready_required"
+	}
+	if snapshotViewerReady(snapshot) {
+		return "waiting"
+	}
+	return "between_hands"
+}
+
+func pokerPlayerState(player poker.PlayerView) string {
+	switch {
+	case player.Folded:
+		return "folded"
+	case player.AllIn:
+		return "all_in"
+	case player.InHand:
+		return "active"
+	case player.Ready:
+		return "ready"
+	default:
+		return "waiting"
+	}
+}
+
+func landlordPlayerState(player landlord.PlayerView, active bool) string {
+	if active {
+		return "active"
+	}
+	if player.Ready {
+		return "ready"
+	}
+	return "waiting"
+}
+
+func pokerLegalActions(allowed poker.AllowedActions) []string {
+	actions := make([]string, 0, 6)
+	for _, item := range []struct {
+		allowed bool
+		name    string
+	}{
+		{allowed.CanFold, string(poker.ActionFold)}, {allowed.CanCheck, string(poker.ActionCheck)},
+		{allowed.CanCall, string(poker.ActionCall)}, {allowed.CanBet, string(poker.ActionBet)},
+		{allowed.CanRaise, string(poker.ActionRaise)}, {allowed.CanAllIn, string(poker.ActionAllIn)},
+	} {
+		if item.allowed {
+			actions = append(actions, item.name)
 		}
 	}
-	return TableOutput{Table: view, Notice: notice}
+	return actions
+}
+
+func landlordLegalActions(allowed landlord.AllowedActions) []string {
+	actions := make([]string, 0, 3)
+	if allowed.CanBid {
+		actions = append(actions, string(landlord.ActionBid))
+	}
+	if allowed.CanPlay {
+		actions = append(actions, string(landlord.ActionPlay))
+	}
+	if allowed.CanPass {
+		actions = append(actions, string(landlord.ActionPass))
+	}
+	return actions
+}
+
+func pokerCardCodes(cards []poker.Card) []string {
+	if len(cards) == 0 {
+		return nil
+	}
+	codes := make([]string, 0, len(cards))
+	for _, card := range cards {
+		codes = append(codes, card.String())
+	}
+	return codes
+}
+
+func landlordCardCodes(cards []landlord.Card) []string {
+	if len(cards) == 0 {
+		return nil
+	}
+	codes := make([]string, 0, len(cards))
+	for _, card := range cards {
+		codes = append(codes, card.String())
+	}
+	return codes
+}
+
+func enrichKickVote(vote *wireKickVote, snapshot gameSnapshot) *KickVoteView {
+	if vote == nil {
+		return nil
+	}
+	view := KickVoteView{
+		TargetName: vote.TargetName, InitiatorName: vote.InitiatorName, YesCount: vote.YesCount,
+		RequiredYes: vote.RequiredYes, ExpiresAt: vote.ExpiresAt,
+	}
+	view.TargetIsViewer = vote.TargetUserID == snapshotViewerUserID(snapshot)
+	view.CanCancelByReady = view.TargetIsViewer && snapshotCanReady(snapshot) && !snapshotViewerReady(snapshot)
+	return &view
+}
+
+func snapshotViewerUserID(snapshot gameSnapshot) int64 {
+	viewerSeat := snapshotViewerSeat(snapshot)
+	if snapshot.Landlord != nil {
+		for _, player := range snapshot.Landlord.Players {
+			if player.Seat == viewerSeat {
+				return player.UserID
+			}
+		}
+	}
+	if snapshot.Poker != nil {
+		for _, player := range snapshot.Poker.Players {
+			if player.Seat == viewerSeat {
+				return player.UserID
+			}
+		}
+	}
+	return 0
+}
+
+func snapshotViewerReady(snapshot gameSnapshot) bool {
+	viewerSeat := snapshotViewerSeat(snapshot)
+	if snapshot.Landlord != nil {
+		for _, player := range snapshot.Landlord.Players {
+			if player.Seat == viewerSeat {
+				return player.Ready
+			}
+		}
+	}
+	if snapshot.Poker != nil {
+		for _, player := range snapshot.Poker.Players {
+			if player.Seat == viewerSeat {
+				return player.Ready
+			}
+		}
+	}
+	return false
+}
+
+func snapshotCanReady(snapshot gameSnapshot) bool {
+	if snapshot.Landlord != nil {
+		return snapshot.Landlord.CanStart
+	}
+	return snapshot.Poker != nil && snapshot.Poker.CanStart
+}
+
+func snapshotHandID(snapshot gameSnapshot) int64 {
+	if snapshot.Landlord != nil {
+		return snapshot.Landlord.HandID
+	}
+	if snapshot.Poker != nil {
+		return snapshot.Poker.HandID
+	}
+	return 0
+}
+
+type waitState struct {
+	active      bool
+	nextAllowed time.Time
+}
+
+type waitRegistry struct {
+	mu     sync.Mutex
+	states map[string]waitState
+}
+
+func newWaitRegistry() *waitRegistry {
+	return &waitRegistry{states: make(map[string]waitState)}
+}
+
+func (registry *waitRegistry) acquire(identity string) (func(time.Duration), int, bool) {
+	registry.mu.Lock()
+	now := time.Now()
+	state := registry.states[identity]
+	if state.active || now.Before(state.nextAllowed) {
+		retryAfter := max(1, int(time.Until(state.nextAllowed).Milliseconds()))
+		if state.active {
+			retryAfter = 1000
+		}
+		registry.mu.Unlock()
+		return nil, retryAfter, false
+	}
+	registry.states[identity] = waitState{active: true}
+	registry.mu.Unlock()
+	return func(cooldown time.Duration) {
+		registry.mu.Lock()
+		registry.states[identity] = waitState{nextAllowed: time.Now().Add(cooldown)}
+		registry.mu.Unlock()
+	}, 0, true
 }
 
 func snapshotViewerSeat(snapshot gameSnapshot) int {
@@ -505,28 +734,6 @@ func snapshotHandActive(snapshot gameSnapshot) bool {
 	return street == poker.StreetPreflop || street == poker.StreetFlop || street == poker.StreetTurn || street == poker.StreetRiver
 }
 
-func cardViews(cards []poker.Card) []CardView {
-	if len(cards) == 0 {
-		return nil
-	}
-	views := make([]CardView, 0, len(cards))
-	for _, card := range cards {
-		views = append(views, CardView{Code: card.String(), Rank: int(card.Rank), Suit: suitName(card.Suit)})
-	}
-	return views
-}
-
-func landlordCardViews(cards []landlord.Card) []CardView {
-	if len(cards) == 0 {
-		return nil
-	}
-	views := make([]CardView, 0, len(cards))
-	for _, card := range cards {
-		views = append(views, CardView{Code: card.String(), Rank: int(card.Rank), Suit: landlordSuitName(card.Suit)})
-	}
-	return views
-}
-
 func parseLandlordCard(code string) (landlord.Card, error) {
 	code = strings.TrimSpace(code)
 	upper := strings.ToUpper(code)
@@ -557,36 +764,4 @@ func parseLandlordCard(code string) (landlord.Card, error) {
 		return landlord.Card{}, fmt.Errorf("invalid landlord card rank in %q", code)
 	}
 	return landlord.Card{Rank: rank, Suit: suit}, nil
-}
-
-func suitName(suit poker.Suit) string {
-	switch suit {
-	case poker.Clubs:
-		return "clubs"
-	case poker.Diamonds:
-		return "diamonds"
-	case poker.Hearts:
-		return "hearts"
-	case poker.Spades:
-		return "spades"
-	default:
-		return fmt.Sprintf("unknown_%d", suit)
-	}
-}
-
-func landlordSuitName(suit landlord.Suit) string {
-	switch suit {
-	case landlord.Clubs:
-		return "clubs"
-	case landlord.Diamonds:
-		return "diamonds"
-	case landlord.Hearts:
-		return "hearts"
-	case landlord.Spades:
-		return "spades"
-	case landlord.Joker:
-		return "joker"
-	default:
-		return fmt.Sprintf("unknown_%d", suit)
-	}
 }

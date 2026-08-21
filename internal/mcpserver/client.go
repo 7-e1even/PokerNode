@@ -108,31 +108,24 @@ type channelView struct {
 }
 
 type tableSummary struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	GameType             string      `json:"game_type"`
-	SmallBlind           int64       `json:"small_blind_cents,omitempty"`
-	BigBlind             int64       `json:"big_blind_cents,omitempty"`
-	BaseStake            int64       `json:"base_stake_cents,omitempty"`
-	ActionTimeoutSeconds int         `json:"action_timeout_seconds"`
-	PlayerCount          int         `json:"player_count"`
-	MaxPlayers           int         `json:"max_players"`
-	HandID               int64       `json:"hand_id"`
-	Street               string      `json:"street"`
-	ViewerSeated         bool        `json:"viewer_seated"`
-	Players              []tableSeat `json:"players"`
-}
-
-type tableSeat struct {
-	UserID int64  `json:"user_id"`
-	Name   string `json:"name"`
-	Seat   int    `json:"seat"`
-	Stack  int64  `json:"stack_cents"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	GameType             string `json:"game_type"`
+	SmallBlind           int64  `json:"small_blind_cents,omitempty" jsonschema:"Integer USD cents; 50 means 0.50 USD."`
+	BigBlind             int64  `json:"big_blind_cents,omitempty" jsonschema:"Integer USD cents; 100 means 1.00 USD."`
+	BaseStake            int64  `json:"base_stake_cents,omitempty" jsonschema:"Integer USD cents; 100 means 1.00 USD."`
+	ActionTimeoutSeconds int    `json:"action_timeout_seconds"`
+	PlayerCount          int    `json:"player_count"`
+	MaxPlayers           int    `json:"max_players"`
+	HandID               int64  `json:"hand_id"`
+	Street               string `json:"street"`
+	ViewerSeated         bool   `json:"viewer_seated"`
 }
 
 type tableEnvelope struct {
-	Table  gameSnapshot
-	Notice string
+	Table    gameSnapshot
+	KickVote *wireKickVote
+	Notice   string
 }
 
 type gameSnapshot struct {
@@ -143,9 +136,19 @@ type gameSnapshot struct {
 
 type wireTableEnvelope struct {
 	Table       json.RawMessage `json:"table"`
+	KickVote    *wireKickVote   `json:"kick_vote"`
 	Notice      string          `json:"notice,omitempty"`
 	OperationID string          `json:"operation_id,omitempty"`
 	Settled     int64           `json:"settled_cents,omitempty"`
+}
+
+type wireKickVote struct {
+	TargetUserID  int64  `json:"target_user_id"`
+	TargetName    string `json:"target_name"`
+	InitiatorName string `json:"initiator_name"`
+	YesCount      int    `json:"yes_count"`
+	RequiredYes   int    `json:"required_yes"`
+	ExpiresAt     int64  `json:"expires_at"`
 }
 
 type wireCurrentGame struct {
@@ -248,7 +251,7 @@ func (c *APIClient) getTable(ctx context.Context, spaceID, tableID string) (tabl
 		return tableEnvelope{}, err
 	}
 	table, err := decodeGameSnapshot(response.Table)
-	return tableEnvelope{Table: table, Notice: response.Notice}, err
+	return tableEnvelope{Table: table, KickVote: response.KickVote, Notice: response.Notice}, err
 }
 
 func (c *APIClient) joinTable(ctx context.Context, spaceID, tableID string, buyIn int64) (gameSnapshot, string, error) {
@@ -266,7 +269,7 @@ func (c *APIClient) ready(ctx context.Context, spaceID, tableID string) (tableEn
 		return tableEnvelope{}, err
 	}
 	table, err := decodeGameSnapshot(response.Table)
-	return tableEnvelope{Table: table, Notice: response.Notice}, err
+	return tableEnvelope{Table: table, KickVote: response.KickVote, Notice: response.Notice}, err
 }
 
 func (c *APIClient) act(ctx context.Context, spaceID, tableID string, input gameActionRequest) (tableEnvelope, error) {
@@ -282,7 +285,7 @@ func (c *APIClient) act(ctx context.Context, spaceID, tableID string, input game
 		return tableEnvelope{}, err
 	}
 	table, err := decodeGameSnapshot(response.Table)
-	return tableEnvelope{Table: table, Notice: response.Notice}, err
+	return tableEnvelope{Table: table, KickVote: response.KickVote, Notice: response.Notice}, err
 }
 
 func (c *APIClient) leaveTable(ctx context.Context, spaceID, tableID string) (gameSnapshot, string, int64, error) {

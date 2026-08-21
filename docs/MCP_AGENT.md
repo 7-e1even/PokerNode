@@ -158,21 +158,26 @@ go build -o .\bin\pokernode-mcp.exe .\cmd\pokernode-mcp
 ## 工具
 
 - `pokernode_list_channels`：列出账号已加入的频道。
-- `pokernode_get_current_game`：直接返回该账号当前唯一的牌局；未入座时返回 `active: false`。
-- `pokernode_list_tables`：列出频道牌桌和当前座位。
-- `pokernode_get_table`：读取当前玩家视角的完整牌桌状态。
-- `pokernode_wait_for_turn`：等待轮到自己、牌局结束或超时。
+- `pokernode_get_current_game`：只返回当前唯一牌局的位置和托管状态；未入座时返回 `active: false`。
+- `pokernode_list_tables`：列出频道牌桌摘要，不附带完整玩家名单。
+- `pokernode_wait_for_turn`：等待轮到自己、需要准备、收到移出投票、离开座位或超时，返回精简决策状态。
 - `pokernode_join_table`：买入并入座，金额单位是整数美分。
 - `pokernode_ready`：准备；全员准备后自动开局。
 - `pokernode_act`：执行当前游戏允许的动作；德州可弃牌、过牌、跟注、下注、加注或全下，斗地主可叫分、出牌或不出。
 - `pokernode_leave_table`：仅在两手牌之间离桌并结算余额。
 
-Agent 每次行动前应先读取 `game_type`、`allowed_actions` 和 `turn_id`。调用 `pokernode_act` 时必须原样提交最新的 `expected_turn_id`；轮次已经变化时服务端会拒绝陈旧动作，Agent 应重新读取状态再决策。德州的 `bet` 和 `raise` 使用 `amount_cents` 表示本轮下注总目标，不是增加量；目标必须位于 `min_raise_to_cents` 与 `max_raise_to_cents` 之间。
+MCP 的权威金额使用整数美分，避免浮点误差。返回结果只声明一次 `money: {"currency":"USD","unit":"cent","scale":100}`；所有 `*_cents` 都除以 100 后才是美元。例如 `stack_cents: 10000` 表示 100.00 美元，`buy_in_cents: 2000` 表示买入 20.00 美元。
+
+为减少上下文，正常托管循环只需先调用一次 `pokernode_get_current_game` 确认已入座，之后重复 `pokernode_wait_for_turn` → 决策 → `pokernode_act`。`wait_for_turn.state.legal_actions` 只列出当前合法动作，手牌和公共牌使用紧凑短码；`ready`、`act` 和 `leave_table` 会根据账号的全局唯一座位自动定位牌桌，不再重复提交 `space_id`、`table_id`。完整牌桌诊断不再作为 MCP 工具暴露，需要时使用网页牌桌或牌局历史。
+
+Agent 每次行动前应读取 `game_type`、`legal_actions` 和 `turn_id`。调用 `pokernode_act` 时必须原样提交最新的 `expected_turn_id`；返回 `code: "stale_turn"` 时，按 `next_tool` 重新等待，不要用相同参数连续重试。德州的 `bet` 和 `raise` 使用 `amount_cents` 表示本轮下注总目标，不是增加量；目标必须位于 `min_raise_to_cents` 与 `max_raise_to_cents` 之间。
+
+`wait_for_turn` 返回 `ready_required` 时立即调用 `pokernode_ready`；返回 `kick_vote` 时说明当前玩家正被发起移出投票，应在 `expires_at` 前准备；返回 `not_seated` 时停止等待并调用一次 `pokernode_get_current_game`。服务端会拒绝同一账号的并发等待，并通过 `retry_after_ms` 指示退避时间，客户端不得无间隔轮询。
 
 例如，读取到 `turn_id: 42` 后执行德州跟注：
 
 ```json
-{"space_id":"space-id","table_id":"table-id","action":"call","expected_turn_id":42}
+{"action":"call","expected_turn_id":42}
 ```
 
 斗地主叫分使用 `{"action":"bid","bid":1,"expected_turn_id":42}`（`bid: 0` 表示不叫），出牌使用 `{"action":"play","cards":["3c","3d"],"expected_turn_id":42}`，不出也必须携带 `expected_turn_id`。普通牌沿用 `As`、`Td`、`2c` 等短码，小王和大王分别为 `SJ`、`BJ`。服务端仍会校验手牌归属、牌型以及能否压过上一手。

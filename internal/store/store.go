@@ -1463,6 +1463,21 @@ func (s *Store) UpdateWalletOperation(ctx context.Context, operationID, status, 
 	return err
 }
 
+func (s *Store) CompleteWalletOperationAndReleaseTableSeat(ctx context.Context, operationID string, userID int64, spaceID, tableID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE wallet_operations SET status='completed',error='',updated_at=$1 WHERE id=$2`, time.Now().UTC().Format(time.RFC3339Nano), operationID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_table_seats WHERE user_id=$1 AND space_id=$2 AND table_id=$3`, userID, spaceID, tableID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) WalletOperations(ctx context.Context, spaceID string, userID int64, limit, offset int) ([]WalletOperation, int, error) {
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM wallet_operations WHERE space_id=$1 AND user_id=$2`, spaceID, userID).Scan(&total); err != nil {
@@ -1489,14 +1504,15 @@ func (s *Store) ChannelLeaderboard(ctx context.Context, spaceID string) ([]Chann
 SELECT u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
-  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL THEN -w.cents
   ELSE 0
 END),0)::BIGINT AS raw_cents,
-COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL)::INTEGER AS sessions,
 COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
 FROM space_members m
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN active_table_seats active ON active.user_id=m.user_id AND active.space_id=m.space_id AND active.table_id=w.table_id AND w.created_at::TIMESTAMPTZ>=active.reserved_at::TIMESTAMPTZ
 LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE m.space_id=$1 AND u.ranking_hidden=FALSE
 GROUP BY u.id,u.display_name,u.avatar_url
@@ -1524,15 +1540,16 @@ func (s *Store) LobbyLeaderboard(ctx context.Context, userID int64) ([]ChannelLe
 SELECT m.space_id,u.id,u.display_name,u.avatar_url,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
-  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL THEN -w.cents
   ELSE 0
 END),0)::BIGINT AS raw_cents,
-COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL)::INTEGER AS sessions,
 COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
 FROM space_members viewer
 JOIN space_members m ON m.space_id=viewer.space_id
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN active_table_seats active ON active.user_id=m.user_id AND active.space_id=m.space_id AND active.table_id=w.table_id AND w.created_at::TIMESTAMPTZ>=active.reserved_at::TIMESTAMPTZ
 LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE viewer.user_id=$1 AND u.ranking_hidden=FALSE
 GROUP BY m.space_id,u.id,u.display_name,u.avatar_url
@@ -1565,14 +1582,15 @@ func (s *Store) AdminLeaderboard(ctx context.Context, spaceID string) ([]AdminRa
 SELECT m.space_id,u.id,u.display_name,u.avatar_url,u.ranking_hidden,
 COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
-  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL THEN -w.cents
   ELSE 0
 END),0)::BIGINT AS raw_cents,
-COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in')::INTEGER AS sessions,
+COUNT(*) FILTER (WHERE w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL)::INTEGER AS sessions,
 COALESCE(MAX(a.cents),0)::BIGINT AS adjustment_cents
 FROM space_members m
 JOIN users u ON u.id=m.user_id
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN active_table_seats active ON active.user_id=m.user_id AND active.space_id=m.space_id AND active.table_id=w.table_id AND w.created_at::TIMESTAMPTZ>=active.reserved_at::TIMESTAMPTZ
 LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE ($1='' OR m.space_id=$1)
 GROUP BY m.space_id,u.id,u.display_name,u.avatar_url,u.ranking_hidden
@@ -1666,11 +1684,12 @@ func rankingBaseCentsWithQueryer(ctx context.Context, queryer rankingQueryer, sp
 		var baseCents int64
 		err := queryer.QueryRowContext(ctx, `SELECT COUNT(DISTINCT m.user_id),COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
-  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL THEN -w.cents
   ELSE 0
 END),0)::BIGINT
 FROM space_members m
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN active_table_seats active ON active.user_id=m.user_id AND active.space_id=m.space_id AND active.table_id=w.table_id AND w.created_at::TIMESTAMPTZ>=active.reserved_at::TIMESTAMPTZ
 WHERE m.space_id=$1 AND m.user_id=$2`, spaceID, userID).Scan(&memberships, &baseCents)
 		if err != nil {
 			return 0, err
@@ -1685,11 +1704,12 @@ WHERE m.space_id=$1 AND m.user_id=$2`, spaceID, userID).Scan(&memberships, &base
 	err := queryer.QueryRowContext(ctx, `WITH scoped AS (
 SELECT m.space_id,COALESCE(SUM(CASE
   WHEN w.status='completed' AND w.kind='cash_out' THEN w.cents
-  WHEN w.status='completed' AND w.kind='buy_in' THEN -w.cents
+  WHEN w.status='completed' AND w.kind='buy_in' AND active.user_id IS NULL THEN -w.cents
   ELSE 0
 END),0)::BIGINT+COALESCE(MAX(a.cents),0)::BIGINT AS net_cents
 FROM space_members m
 LEFT JOIN wallet_operations w ON w.space_id=m.space_id AND w.user_id=m.user_id
+LEFT JOIN active_table_seats active ON active.user_id=m.user_id AND active.space_id=m.space_id AND active.table_id=w.table_id AND w.created_at::TIMESTAMPTZ>=active.reserved_at::TIMESTAMPTZ
 LEFT JOIN ranking_adjustments a ON a.scope_space_id=m.space_id AND a.user_id=m.user_id
 WHERE m.user_id=$1
 GROUP BY m.space_id

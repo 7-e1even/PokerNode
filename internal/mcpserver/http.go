@@ -21,6 +21,7 @@ type HTTPIdentityResolver func(context.Context, string, *http.Request) (*HTTPIde
 
 func NewHTTPHandler(resolve HTTPIdentityResolver, logger *slog.Logger) http.Handler {
 	schemaCache := mcp.NewSchemaCache()
+	waits := newWaitRegistry()
 	streamable := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 		tokenInfo := mcpauth.TokenInfoFromContext(request.Context())
 		if tokenInfo == nil || tokenInfo.Extra == nil {
@@ -30,7 +31,7 @@ func NewHTTPHandler(resolve HTTPIdentityResolver, logger *slog.Logger) http.Hand
 		if identity == nil || identity.Client == nil {
 			return nil
 		}
-		return newServer(identity.Client, schemaCache)
+		return newServerForIdentity(identity.Client, schemaCache, waits, identity.UserID)
 	}, &mcp.StreamableHTTPOptions{
 		Stateless:                    true,
 		JSONResponse:                 true,

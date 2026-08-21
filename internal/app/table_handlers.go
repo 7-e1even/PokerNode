@@ -526,12 +526,9 @@ func (s *Server) handleTableLeave(w http.ResponseWriter, r *http.Request, user s
 		_ = s.store.UpdateWalletOperation(r.Context(), operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return err
 	}
-	if err := s.store.ReleaseTableSeat(r.Context(), user.ID, space.ID, tableID); err != nil {
-		s.logger.Error("release global table seat", "user_id", user.ID, "space_id", space.ID, "table_id", tableID, "error", err)
-	}
 	runtime.kickVote = nil
-	if err := s.store.UpdateWalletOperation(r.Context(), operationID, "completed", ""); err != nil {
-		s.logger.Error("mark cash-out operation complete", "operation_id", operationID, "error", err)
+	if err := s.store.CompleteWalletOperationAndReleaseTableSeat(r.Context(), operationID, user.ID, space.ID, tableID); err != nil {
+		s.logger.Error("finalize cash-out operation", "operation_id", operationID, "user_id", user.ID, "space_id", space.ID, "table_id", tableID, "error", err)
 	}
 	s.broadcast(space.ID, tableID, runtime)
 	writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "settled_cents": settled, "table": runtime.snapshot(user.ID)})
@@ -756,11 +753,8 @@ func (s *Server) cashOutPlayerLocked(ctx context.Context, space store.Space, tab
 		_ = s.store.UpdateWalletOperation(ctx, operationID, "manual_review", "balance credited but local persistence failed: "+err.Error())
 		return 0, err
 	}
-	if err := s.store.ReleaseTableSeat(ctx, targetUserID, space.ID, tableID); err != nil {
-		s.logger.Error("release global table seat", "user_id", targetUserID, "space_id", space.ID, "table_id", tableID, "error", err)
-	}
-	if err := s.store.UpdateWalletOperation(ctx, operationID, "completed", ""); err != nil {
-		s.logger.Error("mark vote kick cash-out complete", "operation_id", operationID, "error", err)
+	if err := s.store.CompleteWalletOperationAndReleaseTableSeat(ctx, operationID, targetUserID, space.ID, tableID); err != nil {
+		s.logger.Error("finalize forced cash-out operation", "operation_id", operationID, "user_id", targetUserID, "space_id", space.ID, "table_id", tableID, "error", err)
 	}
 	return settled, nil
 }

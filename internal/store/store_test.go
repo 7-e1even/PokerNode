@@ -316,8 +316,34 @@ func TestRankingAmountsCanBeAdjustedAndResetWithoutChangingWalletHistory(t *test
 	if err != nil || entries[0].NetCents != 10 {
 		t.Fatalf("all-channel reset should not rewrite channel ranking: entries=%#v err=%v", entries, err)
 	}
+	if err := database.SaveTableState(ctx, space.ID, "ranking-table", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ReserveActiveTableSeat(ctx, admin.ID, space.ID, "ranking-table"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ActivateTableSeat(ctx, admin.ID, space.ID, "ranking-table"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateWalletOperation(ctx, WalletOperation{
+		ID: "ranking-active-buy-in", SpaceID: space.ID, TableID: "ranking-table", UserID: admin.ID, NewAPIUserID: 1,
+		Kind: "buy_in", Cents: 200, Quota: 1_000_000, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != 10 || entries[0].Sessions != 1 {
+		t.Fatalf("active buy-in should stay outside settled ranking: entries=%#v err=%v", entries, err)
+	}
+	if err := database.ReleaseTableSeat(ctx, admin.ID, space.ID, "ranking-table"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = database.ChannelLeaderboard(ctx, space.ID)
+	if err != nil || entries[0].NetCents != -190 || entries[0].Sessions != 2 {
+		t.Fatalf("zero-stack leave should settle the full buy-in loss: entries=%#v err=%v", entries, err)
+	}
 	operations, total, err := database.WalletOperations(ctx, space.ID, admin.ID, 10, 0)
-	if err != nil || total != 4 || len(operations) != 4 {
+	if err != nil || total != 5 || len(operations) != 5 {
 		t.Fatalf("ranking controls changed wallet history: total=%d operations=%#v err=%v", total, operations, err)
 	}
 }
