@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEventHandler } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEventHandler, type PointerEventHandler } from "react";
 import { ArrowLeft, Check, CircleDollarSign, CircleHelp, Clock3, Crown, DoorOpen, LogOut, MoreHorizontal, Play, Spade } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -160,7 +160,13 @@ export default function LandlordRoom({ user, initialSpace, initialTable, onBack 
                 <strong className="px-1 text-xs">{phaseLabel(table.phase)}</strong>
                 <Separator orientation="vertical" className="h-4" />
                 <span className="truncate text-xs text-muted-foreground">
-                  {table.acting_seat >= 0 ? `${actingPlayer?.name || "玩家"}行动` : table.phase === "waiting" ? `${table.players.length}/3 人已入座` : "等待下一局"}
+                  {table.last_result
+                    ? `${table.last_result.message} · 每家 ${money(table.last_result.stake_cents)}`
+                    : table.acting_seat >= 0
+                      ? `${actingPlayer?.name || "玩家"}行动`
+                      : table.phase === "waiting"
+                        ? `${table.players.length}/3 人已入座`
+                        : "等待下一局"}
                 </span>
                 {table.highest_bid > 0 && <Badge variant="outline" className="hidden sm:inline-flex">叫分 {table.highest_bid}</Badge>}
                 {table.multiplier > 1 && <Badge className="hidden sm:inline-flex">× {table.multiplier}</Badge>}
@@ -215,7 +221,6 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
   const [buyIn, setBuyIn] = useState(10_000);
   const [busy, setBusy] = useState(false);
   const dragSelection = useRef<{ selecting: boolean; visited: Set<string> } | null>(null);
-  const pointerHandledCard = useRef<string | null>(null);
   const seconds = useCountdown(table.action_deadline_at, table.turn_id);
   const viewer = table.players.find((player) => player.user_id === user.id);
   const seated = table.viewer_seat >= 0;
@@ -238,7 +243,6 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
   useEffect(() => {
     const stopDragging = () => {
       dragSelection.current = null;
-      window.setTimeout(() => { pointerHandledCard.current = null; }, 0);
     };
     window.addEventListener("pointerup", stopDragging);
     window.addEventListener("pointercancel", stopDragging);
@@ -283,14 +287,8 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
   function beginCardDrag(card: GameCard) {
     const key = cardKey(card);
     const selecting = !selected.includes(key);
-    pointerHandledCard.current = key;
     dragSelection.current = { selecting, visited: new Set([key]) };
     setCardSelected(key, selecting);
-  }
-
-  function clickCard(card: GameCard) {
-    if (pointerHandledCard.current === cardKey(card)) return;
-    toggleCard(card);
   }
 
   function continueCardDrag(card: GameCard, buttons: number) {
@@ -338,12 +336,12 @@ function LandlordTable({ table, user, spaceID, tableID, onChanged, snapshotGate,
           {table.last_result && <Badge variant="secondary" className="landlord-result-banner">{table.last_result.message} · 每家 {money(table.last_result.stake_cents)}</Badge>}
         </div>
 
-        <div className="landlord-self-area">
+        <div className="landlord-self-area" data-seated={viewer ? "true" : "false"}>
           {viewer ? <>
             <PlayerPanel player={viewer} viewer waitingForDeal={waitingForDeal} showReady={table.phase === "waiting" || table.phase === "complete"} />
             <div className="landlord-hand" aria-label={`你的手牌，共 ${viewer.card_count} 张`}>
               <div className="landlord-hand-row" style={{ "--hand-count": Math.max(viewerCards.length, 1) } as CSSProperties} onPointerMove={(event) => { if (event.pointerType !== "mouse") continueTouchDrag(event.clientX, event.clientY); }}>
-                {viewerCards.map((card, index, cards) => <LandlordCard key={`${table.hand_id}:${cardKey(card)}`} card={card} selected={selected.includes(cardKey(card))} disabled={!table.allowed_actions.can_play || busy} onClick={() => clickCard(card)} onPointerDown={(event) => { if (event.button === 0) { event.preventDefault(); beginCardDrag(card); } }} onPointerEnter={(event) => continueCardDrag(card, event.buttons)} motion="deal" motionIndex={index} motionX={`${((cards.length - 1) / 2 - index) * 2.1}rem`} />)}
+                {viewerCards.map((card, index, cards) => <LandlordCard key={`${table.hand_id}:${cardKey(card)}`} card={card} selected={selected.includes(cardKey(card))} disabled={!table.allowed_actions.can_play || busy} onClick={(event) => { if (event.detail === 0) toggleCard(card); }} onPointerDown={(event) => { if (event.button === 0) { event.preventDefault(); beginCardDrag(card); } }} onPointerEnter={(event) => continueCardDrag(card, event.buttons)} motion="deal" motionIndex={index} motionX={`${((cards.length - 1) / 2 - index) * 2.1}rem`} />)}
                 {viewer.card_count === 0 && !waitingForDeal && <span className="landlord-hand-empty py-8 text-sm text-muted-foreground">{table.phase === "complete" ? "本局手牌已出完" : "等待发牌"}</span>}
               </div>
             </div>
@@ -394,7 +392,7 @@ function CardRow({ cards, hiddenCount = 0, compact = false, motion, motionOrigin
   return <div className="flex">{cards.map((card, index) => <LandlordCard key={`${animationKey}:${cardKey(card)}:${index}`} card={card} compact={compact} disabled motion={motion} motionOrigin={motionOrigin} motionIndex={index} style={{ marginLeft: index === 0 ? 0 : compact ? "-0.65rem" : "-1.25rem" }} />)}</div>;
 }
 
-function LandlordCard({ card, selected = false, compact = false, disabled = false, onClick, onPointerDown, onPointerEnter, style, motion, motionOrigin, motionIndex = 0, motionX = "0rem" }: { card: GameCard; selected?: boolean; compact?: boolean; disabled?: boolean; onClick?: () => void; onPointerDown?: PointerEventHandler<HTMLButtonElement>; onPointerEnter?: PointerEventHandler<HTMLButtonElement>; style?: CSSProperties; motion?: "deal" | "play" | "reveal"; motionOrigin?: "left" | "right" | "self" | "center"; motionIndex?: number; motionX?: string }) {
+function LandlordCard({ card, selected = false, compact = false, disabled = false, onClick, onPointerDown, onPointerEnter, style, motion, motionOrigin, motionIndex = 0, motionX = "0rem" }: { card: GameCard; selected?: boolean; compact?: boolean; disabled?: boolean; onClick?: MouseEventHandler<HTMLButtonElement>; onPointerDown?: PointerEventHandler<HTMLButtonElement>; onPointerEnter?: PointerEventHandler<HTMLButtonElement>; style?: CSSProperties; motion?: "deal" | "play" | "reveal"; motionOrigin?: "left" | "right" | "self" | "center"; motionIndex?: number; motionX?: string }) {
   const joker = card.rank >= 16;
   const red = card.suit === 1 || card.suit === 2 || card.rank === 17;
   const rank = rankLabel(card.rank);

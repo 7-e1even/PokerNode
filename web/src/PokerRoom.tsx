@@ -655,6 +655,7 @@ function Seat({ layout, isViewer, avatarURL, table, isWinner, showWinnerCrown, c
       data-visual-index={layout.index}
       data-viewer={isViewer ? "true" : undefined}
       data-horizontal-edge={x <= 15 || x >= 85 ? "true" : undefined}
+      data-vertical-edge={y <= 15 ? "top" : undefined}
       style={{ "--poker-seat-x": `${x}%`, "--poker-seat-y": `${y}%` } as CSSProperties}
     >
       {player.cards && player.cards.length > 0 && <div className="poker-hole-cards absolute left-1/2 flex -translate-x-1/2">{player.cards.map((card, index) => <PlayingCard card={card} dealIndex={holeCardDealIndex(table, player.seat, index)} dealOrigin={dealOrigin} motion="hole" key={`${table.hand_id}-${index}-${card.rank}-${card.suit}`} />)}</div>}
